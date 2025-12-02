@@ -1,0 +1,41 @@
+# ----------------------------
+# CMake build files
+# ----------------------------
+# Build directories
+**/build/
+**/CMakeFiles/
+**/CMakeCache.txt
+**/cmake_install.cmake
+**/Makefile
+**/CMakeScripts/
+**/Testing/
+
+# ----------------------------
+# Visual Studio files
+# ----------------------------
+*.vcxproj*
+*.sln
+*.user
+*.opensdf
+*.sdf
+*.VC.db
+
+# ----------------------------
+# Visual Studio Code
+# ----------------------------
+.vscode/
+
+# ----------------------------
+# OS files
+# ----------------------------
+# Windows
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# macOS
+.DS_Store
+
+# Linux
+*~
+*.swp
