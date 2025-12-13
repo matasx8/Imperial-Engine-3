@@ -17,7 +17,7 @@ namespace imp
         const void* pNext;
         const PlatformInitParams* pPlatformInitParams;
         uint32_t numRequiredExtensions;
-        const char** pRequiredExtensions;
+        const char* const* pRequiredExtensions;
         VkPhysicalDeviceFeatures2 requiredFeatures;
     };
 

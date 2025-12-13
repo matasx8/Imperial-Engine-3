@@ -23,3 +23,32 @@ target_include_directories(triangle PUBLIC
 )
 
 target_link_libraries(triangle PRIVATE ImperialEngine3_Engine)
+
+set(SHADER_SPV_DIR ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/spv)
+file(MAKE_DIRECTORY ${SHADER_SPV_DIR})
+
+function(add_shader TARGET SHADER OUTPUT)
+    set(OUTPUT_FILE ${SHADER_SPV_DIR}/${OUTPUT}.h)
+
+    get_filename_component(SHADER_ABS ${SHADER} ABSOLUTE)
+
+    add_custom_command(
+        OUTPUT ${OUTPUT_FILE}
+        COMMAND ${Vulkan_GLSLANG_VALIDATOR_EXECUTABLE}
+            --target-env spirv1.3
+            -V
+            --vn ${OUTPUT}
+            -o ${OUTPUT_FILE}
+            ${SHADER_ABS}
+        DEPENDS ${SHADER_ABS}
+        COMMENT "Compiling shader ${SHADER}"
+        VERBATIM
+    )
+
+    add_custom_target(shader_${OUTPUT} DEPENDS ${OUTPUT_FILE})
+    add_dependencies(${TARGET} shader_${OUTPUT})
+endfunction()
+
+
+add_shader(triangle src/shaders/triangle.vert triangle_vert)
+add_shader(triangle src/shaders/triangle.frag triangle_frag)

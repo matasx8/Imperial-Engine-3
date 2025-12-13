@@ -35,7 +35,7 @@ namespace imp
         virtual VkResult InitializeSwapchain(VkInstance instance, VkPhysicalDevice physicalDevice, VkDevice device);
         virtual VkResult CreateWindowSurface(VkInstance instance) = 0;
 
-        virtual void UpdateInfo() = 0;
+        virtual void UpdateInfo(double frameTimeMs) = 0;
 
         virtual bool ShouldClose() const = 0;
 

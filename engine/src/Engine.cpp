@@ -30,16 +30,20 @@ namespace imp
         // No need, can just destroy the VkCommandPool
     }
 
-    static std::vector<const char*> CombineExtensions(const Window& window, uint32_t numReq, const char** reqs)
+    static std::vector<const char*> CombineExtensions(const Window& window, uint32_t numReq, const char* const* reqs)
     {
         uint32_t count;
         auto windowExtents = window.GetRequiredDeviceExtensions(&count);
 
-        std::vector<const char*> extents {count};
+        std::vector<const char*> extents;
         for (uint32_t i = 0; i < count; i++)
-            extents[i] = windowExtents[i];
-        for (uint32_t i = count; i < extents.capacity(); i++)
-            extents[i] = reqs[i - count];
+            extents.push_back(windowExtents[i]);
+        for (uint32_t i = 0; i < numReq; i++)
+            extents.push_back(reqs[i]);
+
+        for (auto ext : extents)
+            g_Log("Requesting device extension: %s\n", ext);
+        
         return extents;
     }
 
@@ -315,6 +319,25 @@ namespace imp
         return *submitSync;
     }
 
+    VkResult Engine::Present(Window& window, uint32_t imageIndex)
+    {
+        const SubmitSync* lastSubmit = m_SubmitSyncManager.GetLastSubmitSync();
+        VkSwapchainKHR swapchain = window.GetSwapchain().GetSwapchain();
+
+        VkPresentInfoKHR pi {};
+        pi.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+        pi.pWaitSemaphores = lastSubmit ? &lastSubmit->semaphore : nullptr;
+        pi.waitSemaphoreCount = lastSubmit ? 1 : 0;
+        pi.pSwapchains = &swapchain;
+        pi.swapchainCount = 1;
+        pi.pImageIndices = &imageIndex;
+
+        VkResult result = vkt.vkQueuePresentKHR(m_Queue.GetGraphicsQueue(), &pi);
+        if (result != VK_SUCCESS)
+            g_Log("Failed to present to Swapchain with result %d\n", result);
+        return result;
+    }
+
     VkResult Engine::WaitForSubmitSync(const SubmitSync& sync, uint64_t timeout)
     {
         return m_SubmitSyncManager.WaitForSubmitSync(m_Queue.GetDevice(), sync, timeout);
@@ -359,13 +382,30 @@ namespace imp
         return cb;
     }
 
+    SubmitSync Engine::AcquireNextImage(Window& window, uint32_t* nextImageIndex, uint64_t timeout)
+    {
+        SubmitSync sync = m_SubmitSyncManager.GetSubmitSync(m_Queue.GetDevice());
+
+        VkSwapchainKHR swapchain = window.GetSwapchain().GetSwapchain();
+        VkResult result = vkt.vkAcquireNextImageKHR(m_Queue.GetDevice(), swapchain, timeout,
+            sync.semaphore, sync.fence, nextImageIndex);
+
+        if (result != VK_SUCCESS)
+        {
+            g_Log("Failed to acquire next image from Swapchain with result %d\n", result);
+            return CreateFailedSubmitSync();
+        }
+        m_SubmitSyncManager.InsertIntoTimeline(sync);
+        return sync;
+    }
+
     VkResult Engine::CreateInstance(const EngineCreateParams& params)
     {
         VkApplicationInfo appInfo{};
         appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
-        appInfo.pApplicationName = "Imperial Engine 2";
+        appInfo.pApplicationName = "Imperial Engine 3";
         appInfo.applicationVersion = 1;
-        appInfo.apiVersion = VK_MAKE_VERSION(1, 1, 0);
+        appInfo.apiVersion = VK_MAKE_VERSION(1, 3, 0);
 
         VkInstanceCreateInfo createInfo{};
         createInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;

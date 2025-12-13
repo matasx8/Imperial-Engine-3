@@ -18,7 +18,7 @@ namespace imp
 
         virtual VkResult CreateWindowSurface(VkInstance instance) override;
         
-        virtual void UpdateInfo() override;
+        virtual void UpdateInfo(double frameTimeMs) override;
 
         virtual bool ShouldClose() const override;
 

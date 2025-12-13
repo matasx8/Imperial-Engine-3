@@ -16,7 +16,7 @@ namespace imp
             return false;
 
         glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-        m_Window = glfwCreateWindow(params.width, params.height, "Window Title", NULL, NULL);
+        m_Window = glfwCreateWindow(params.width, params.height, "Imperial Engine 3", NULL, NULL);
 
         return true;
     }
@@ -30,9 +30,12 @@ namespace imp
         return glfwCreateWindowSurface(instance, m_Window, NULL, &m_Surface);;
     }
     
-    void WindowGLFW::UpdateInfo()
+    void WindowGLFW::UpdateInfo(double frameTimeMs)
     {
-
+        char titleBuffer[256];
+        snprintf(titleBuffer, sizeof(titleBuffer), "Imperial Engine 3 - %.2f ms (%.0f FPS)", 
+                 frameTimeMs, 1000.0 / frameTimeMs);
+        glfwSetWindowTitle(m_Window, titleBuffer);
     }
 
     bool WindowGLFW::ShouldClose() const
