@@ -83,7 +83,7 @@ namespace imp
         result = CreateInstance(params);
         if (result != VK_SUCCESS)
             return result;
-        g_Log("Vulkan Instance was successfully created.");
+        g_Log("Vulkan Instance was successfully created.\n");
 
         volkLoadInstance(m_Instance);
 
@@ -453,39 +453,59 @@ namespace imp
         vkDestroyInstance(m_Instance, nullptr);
     }
 
-    VkResult Engine::SelectPhysicalDevice(const EngineCreateParams& params)
+VkResult Engine::SelectPhysicalDevice(const EngineCreateParams& params)
+{
+    uint32_t deviceCount = 0;
+    VkResult result = vkEnumeratePhysicalDevices(m_Instance, &deviceCount, nullptr);
+    if (result != VK_SUCCESS)
+        return result;
+
+    if (deviceCount == 0)
     {
-        uint32_t deviceCount = 0;
-        VkResult result = vkEnumeratePhysicalDevices(m_Instance, &deviceCount, nullptr);
-        if (result != VK_SUCCESS)
-            return result;
-
-        if (deviceCount == 0)
-        {
-            g_Log("Error: Could not find any Vulkan Physical Devices.\n");
-            return VK_ERROR_FEATURE_NOT_PRESENT;
-        }
-
-        std::vector<VkPhysicalDevice> devices { deviceCount };
-        result = vkEnumeratePhysicalDevices(m_Instance, &deviceCount, devices.data());
-        if (result != VK_SUCCESS)
-            return result;
-
-        VkPhysicalDeviceProperties props;
-        for (const auto& device : devices)
-        {
-            vkGetPhysicalDeviceProperties(device, &props);
-
-            // TODO: use pNext for custom selection when needed, so far selecting first available since on mobile there will likely be only one
-            if (true)
-            {
-                m_PhysicalDevice = device;
-
-                g_Log("Selected Physical Device: \"%s\"\n", props.deviceName);
-                return VK_SUCCESS;
-            }
-        }
-
-        return VK_ERROR_DEVICE_LOST;
+        g_Log("Error: Could not find any Vulkan Physical Devices.\n");
+        return VK_ERROR_FEATURE_NOT_PRESENT;
     }
+
+    std::vector<VkPhysicalDevice> devices { deviceCount };
+    result = vkEnumeratePhysicalDevices(m_Instance, &deviceCount, devices.data());
+    if (result != VK_SUCCESS)
+        return result;
+
+    VkPhysicalDevice discreteGPU = VK_NULL_HANDLE;
+    VkPhysicalDevice integratedGPU = VK_NULL_HANDLE;
+    VkPhysicalDeviceProperties discreteProps = {};
+    VkPhysicalDeviceProperties integratedProps = {};
+
+    VkPhysicalDeviceProperties props;
+    for (const auto& device : devices)
+    {
+        vkGetPhysicalDeviceProperties(device, &props);
+
+        if (props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU && discreteGPU == VK_NULL_HANDLE)
+        {
+            discreteGPU = device;
+            discreteProps = props;
+        }
+        else if (props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU && integratedGPU == VK_NULL_HANDLE)
+        {
+            integratedGPU = device;
+            integratedProps = props;
+        }
+    }
+
+    if (discreteGPU != VK_NULL_HANDLE)
+    {
+        m_PhysicalDevice = discreteGPU;
+        g_Log("Selected Physical Device (Discrete): \"%s\"\n", discreteProps.deviceName);
+        return VK_SUCCESS;
+    }
+    else if (integratedGPU != VK_NULL_HANDLE)
+    {
+        m_PhysicalDevice = integratedGPU;
+        g_Log("Selected Physical Device (Integrated): \"%s\"\n", integratedProps.deviceName);
+        return VK_SUCCESS;
+    }
+
+    return VK_ERROR_DEVICE_LOST;
+}
 }
