@@ -15,6 +15,7 @@ file(GLOB_RECURSE ENGINE_SOURCES CONFIGURE_DEPENDS
     "src/VulkanFunctionTable.h"
     "src/Platform/Windows/PlatformImpl.cpp"
     "src/Platform/Windows/WindowGLFW.cpp"
+    "src/SafeResourceDestroyer.cpp"
 )
 
 add_library(ImperialEngine3_Engine STATIC ${ENGINE_SOURCES})
@@ -37,3 +38,7 @@ set(GLFW_BUILD_WAYLAND OFF CACHE BOOL "" FORCE)
 
 add_subdirectory(external/GLFW)
 target_link_libraries(ImperialEngine3_Engine PRIVATE glfw)
+
+## -- GLM --
+add_subdirectory(external/GLM)
+target_link_libraries(ImperialEngine3_Engine PUBLIC glm)

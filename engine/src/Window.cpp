@@ -34,7 +34,7 @@ namespace imp
         params.imageCount = AdjustSwapchainImageCount(2, surfaceCaps);
         params.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
         params.imageExtent = { GetWidth(), GetHeight() };
-        params.presentMode = VK_PRESENT_MODE_FIFO_KHR;
+        params.presentMode = VK_PRESENT_MODE_IMMEDIATE_KHR ;
 
         result = m_Swapchain.Initialize(device, params);
         return result;

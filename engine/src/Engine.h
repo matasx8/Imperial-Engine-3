@@ -5,6 +5,7 @@
 #include "Queue.h"
 #include "SubmitSyncManager.h"
 #include "Platform.h"
+#include "SafeResourceDestroyer.h"
 
 #include <vector>
 #include <string>
@@ -65,6 +66,8 @@ namespace imp
         inline Queue& GetWorkQueue() { return m_Queue; }
         inline VkPhysicalDevice GetPhysicalDevice() const { return m_PhysicalDevice; }
         VkPhysicalDeviceMemoryProperties GetMemoryProperties() const;
+        inline SafeResourceDestroyer& GetSafeResourceDestroyer() { return m_SafeResourceDestroyer; }
+        inline VkDescriptorPool GetDescriptorPool() const { return m_DescriptorPool; }
 
         // Command buffers will be automatically recycled when they are submitted
         VkCommandBuffer AcquireCommandBuffer(CommandBufferType type);
@@ -78,6 +81,7 @@ namespace imp
 
         VkInstance m_Instance = VK_NULL_HANDLE;
         VkPhysicalDevice m_PhysicalDevice = VK_NULL_HANDLE;
+        VkDescriptorPool m_DescriptorPool = VK_NULL_HANDLE;
 
         Platform* m_Platform = nullptr;
 
@@ -92,6 +96,8 @@ namespace imp
         CommandBufferPool* m_ComputeCommandBufferPool = nullptr;
 
         SubmitSyncManager m_SubmitSyncManager = {};
+
+        SafeResourceDestroyer m_SafeResourceDestroyer = {};
 
         Queue m_Queue = {};
     };   

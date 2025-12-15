@@ -36,6 +36,7 @@ function(add_shader TARGET SHADER OUTPUT)
         OUTPUT ${OUTPUT_FILE}
         COMMAND ${Vulkan_GLSLANG_VALIDATOR_EXECUTABLE}
             --target-env spirv1.3
+            --target-env vulkan1.1
             -V
             --vn ${OUTPUT}
             -o ${OUTPUT_FILE}
@@ -50,5 +51,5 @@ function(add_shader TARGET SHADER OUTPUT)
 endfunction()
 
 
-add_shader(demo src/shaders/triangle.vert triangle_vert)
-add_shader(demo src/shaders/triangle.frag triangle_frag)
+add_shader(demo src/shaders/phong.vert phong_vert)
+add_shader(demo src/shaders/phong.frag phong_frag)

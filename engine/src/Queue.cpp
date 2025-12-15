@@ -75,6 +75,7 @@ namespace imp
         dci.pQueueCreateInfos = qcis.data();
         dci.enabledExtensionCount = static_cast<uint32_t>(requiredExtensions.size());
         dci.ppEnabledExtensionNames = requiredExtensions.data();
+        dci.pNext = requiredFeatures;
 
         result = vkCreateDevice(physicalDevice, &dci, nullptr, &m_Device);
 

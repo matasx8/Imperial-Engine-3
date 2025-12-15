@@ -65,6 +65,24 @@ namespace imp
         vkt.vkDestroyCommandPool(device, pool, nullptr);
     }
 
+    static VkResult CreateDescriptorPool(VkDevice device, VkDescriptorPool* pool)
+    {
+        VkDescriptorPoolSize poolSize {};
+        poolSize.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        poolSize.descriptorCount = 100; // Arbitrary large number
+
+        VkDescriptorPoolCreateInfo dpci {};
+        dpci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        dpci.maxSets = 100; // Arbitrary large number
+        dpci.poolSizeCount = 1;
+        dpci.pPoolSizes = &poolSize;
+
+        VkResult result = vkt.vkCreateDescriptorPool(device, &dpci, nullptr, pool);
+        if (result != VK_SUCCESS)
+            g_Log("Failed to create a VkDescriptorPool with result %d\n", result);
+        return result;
+    }
+
     VkResult Engine::Initialize(const EngineCreateParams& params)
     {
         m_Platform = new PlatformImpl(); // dont forget destroy
@@ -128,6 +146,14 @@ namespace imp
             return result;
 
         result = m_Platform->GetWindow().InitializeSwapchain(m_Instance, m_PhysicalDevice, m_Queue.GetDevice());
+
+        if (result != VK_SUCCESS)
+            return result;
+
+        result = CreateDescriptorPool(m_Queue.GetDevice(), &m_DescriptorPool);
+
+        if (result == VK_SUCCESS)
+            g_Log("Engine initialized successfully.\n");
 
         return result;
     }
@@ -405,7 +431,7 @@ namespace imp
         appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
         appInfo.pApplicationName = "Imperial Engine 3";
         appInfo.applicationVersion = 1;
-        appInfo.apiVersion = VK_MAKE_VERSION(1, 3, 0);
+        appInfo.apiVersion = VK_MAKE_VERSION(1, 2, 0);
 
         VkInstanceCreateInfo createInfo{};
         createInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
