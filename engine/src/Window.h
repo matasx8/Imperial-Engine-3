@@ -2,6 +2,7 @@
 #include "Swapchain.h"
 
 #include <cstdint>
+#include <glm/mat4x4.hpp>
 
 namespace imp
 {
@@ -36,6 +37,8 @@ namespace imp
         virtual VkResult CreateWindowSurface(VkInstance instance) = 0;
 
         virtual void UpdateInfo(double frameTimeMs) = 0;
+
+        virtual void MoveCamera(glm::mat4& transform, float delta) = 0;
 
         virtual bool ShouldClose() const = 0;
 

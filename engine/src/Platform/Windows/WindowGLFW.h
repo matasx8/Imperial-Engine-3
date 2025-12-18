@@ -20,6 +20,8 @@ namespace imp
         
         virtual void UpdateInfo(double frameTimeMs) override;
 
+        virtual void MoveCamera(glm::mat4& transform, float delta) override;
+
         virtual bool ShouldClose() const override;
 
         virtual uint32_t GetWidth() const override;

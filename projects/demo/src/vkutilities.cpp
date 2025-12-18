@@ -339,7 +339,7 @@ namespace VU
         scene.projection = glm::perspective(glm::radians(90.0f), (float)window.GetWidth() / (float)window.GetHeight(), 1.0f, 1000.0f);
     }
 
-    void UpdateCamera(const SceneData& scene, GlobalUniformsData& globalsData)
+    void UpdateCamera(imp::Window& window, SceneData& scene, GlobalUniformsData& globalsData, double delta)
     {
         // Vulkan's fixed-function steps expect to look down -Z, Y is "down" and RH
         static constexpr glm::vec3 front(0.0f, 0.0f, -1.0f);// look down -z
@@ -349,12 +349,15 @@ namespace VU
         const auto newFront = glm::rotate(quat, front);
         const auto newUp = glm::rotate(quat, up);
 
+        window.MoveCamera(scene.cameraTransform, delta);
+
         // update view matrix
         const glm::vec3 pos = glm::vec3(scene.cameraTransform[3]);
         glm::mat4 view = glm::lookAtRH(pos, pos + newFront, newUp);
 
         globalsData.viewPos = pos;
         globalsData.viewProj = scene.projection * view;
+
     }
 
     void UpdateGlobalDataDescriptorSetByCopy(imp::Engine& engine, const GlobalUniforms& globals, VkCommandBuffer cb)

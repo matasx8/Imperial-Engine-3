@@ -100,7 +100,8 @@ int main()
 
         VkCommandBuffer cb = engine.AcquireCommandBuffer(imp::CommandBufferType::Graphics);
 
-        VU::UpdateCamera(scene, globals.data);
+        float delta = static_cast<float>(frameTimeMs / 1000.0);
+        VU::UpdateCamera(engine.GetPlatform().GetWindow(), scene, globals.data, delta);
         VU::UpdateRenderingDataDescriptorSetByCopy(engine, renderingData, cb, { { glm::mat4(1.0f) } });
         VU::UpdateGlobalDataDescriptorSetByCopy(engine, globals, cb);
 

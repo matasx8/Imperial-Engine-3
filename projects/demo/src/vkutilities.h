@@ -84,7 +84,7 @@ namespace VU
 
     VkResult SetupGlobalUniforms(imp::Engine& engine, GlobalUniforms& globals);
     void InitializeSceneData(imp::Engine& engine, SceneData& scene);
-    void UpdateCamera(const SceneData& scene, GlobalUniformsData& globalsData);
+    void UpdateCamera(imp::Window& window, SceneData& scene, GlobalUniformsData& globalsData, double delta);
     void UpdateGlobalDataDescriptorSetByCopy(imp::Engine& engine, const GlobalUniforms& globals, VkCommandBuffer cb);
     VkResult SetupRenderingDescriptorSet(imp::Engine& engine, RenderingDescriptors& data, Buffer& vertexBuffer
         , Buffer& indexBuffer, uint64_t meshCount);
