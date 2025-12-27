@@ -1,4 +1,4 @@
-#include "vkutilities.h"
+#include "SceneLoader.h"
 #include "Engine.h"
 
 #include "shaders/spv/phong_frag.h"
@@ -6,6 +6,8 @@
 
 #include <array>
 #include <chrono>
+#include <cstdio>
+#include <string>
 
 struct PushConstants
 {
@@ -14,8 +16,20 @@ struct PushConstants
 };
 
 
-int main()
+int main(int argc, char* argv[])
 {
+    // Get GLTF scene path from command-line arguments
+    std::string scenePath;
+    if (argc > 1)
+    {
+        scenePath = argv[1];
+    }
+    else
+    {
+        printf("[Main] Usage: demo.exe <path_to_gltf_scene>\n");
+        return 1;
+    }
+
     imp::WindowInitParams windowInitParams {}; // default
 
     imp::PlatformInitParams platformParams {};
@@ -59,10 +73,14 @@ int main()
     imp::Swapchain& swapchain = engine.GetPlatform().GetWindow().GetSwapchain();
     imp::Window& window = engine.GetPlatform().GetWindow();
 
-    VU::Buffer vertexBuffer {};
-    VU::Buffer indexBuffer {};
-    uint32_t indexCount = 0;
-    VU::GenerateCubeMesh(engine.GetPhysicalDevice(), device, vertexBuffer, indexBuffer, indexCount, engine);
+    // Load GLTF scene
+    SceneLoader::Scene scenel {};
+    if (!SceneLoader::LoadScene(scenePath, engine, scenel))
+    {
+        printf("[Main] Failed to load GLTF scene: %s\n", scenePath.c_str());
+        engine.Shutdown();
+        return 1;
+    }
 
     VU::GlobalUniforms globals {};
     VU::SetupGlobalUniforms(engine, globals);
@@ -71,7 +89,7 @@ int main()
     VU::InitializeSceneData(engine, scene);
 
     VU::RenderingDescriptors renderingData {};
-    VU::SetupRenderingDescriptorSet(engine, renderingData, vertexBuffer, indexBuffer, 1);
+    VU::SetupRenderingDescriptorSet(engine, renderingData, scenel.vertexBuffer, scenel.indexBuffer, 1);
 
     VU::PhongPipeline phongPipeline {};
     phongPipeline.pGlobalUniforms = &globals;
@@ -131,8 +149,8 @@ int main()
         vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, phongPipeline.pipelineLayout, 1, 1, &renderingData.descriptorSet, 0, nullptr);
         vkCmdSetViewport(cb, 0, 1, &viewport);
         vkCmdSetScissor(cb, 0, 1, &rpbi.renderArea);
-        vkCmdBindIndexBuffer(cb, indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
-        vkCmdDrawIndexed(cb, indexCount, 1, 0, 0, 0);
+        vkCmdBindIndexBuffer(cb, scenel.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
+        vkCmdDrawIndexed(cb, scenel.indexCount, 1, 0, 0, 0);
         vkCmdEndRenderPass(cb);
 
         vkEndCommandBuffer(cb);

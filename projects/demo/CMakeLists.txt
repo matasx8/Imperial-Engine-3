@@ -22,7 +22,18 @@ target_include_directories(demo PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
+# -- engine --
 target_link_libraries(demo PRIVATE ImperialEngine3_Engine)
+
+## -- tiny GLTF --
+set(TINYGLTF_HEADER_ONLY ON CACHE INTERNAL "" FORCE)
+set(TINYGLTF_BUILD_LOADER_EXAMPLE OFF CACHE INTERNAL "" FORCE)
+set(TINYGLTF_INSTALL OFF CACHE INTERNAL "" FORCE)
+add_subdirectory(external/Tiny_GLTF)
+target_include_directories(demo PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/external
+)
+
 
 set(SHADER_SPV_DIR ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/spv)
 file(MAKE_DIRECTORY ${SHADER_SPV_DIR})
