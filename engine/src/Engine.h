@@ -62,12 +62,15 @@ namespace imp
         VkResult Present(Window& window, uint32_t imageIndex);
         VkResult WaitForSubmitSync(const SubmitSync& sync, uint64_t timeout = ULLONG_MAX);
 
+        VkResult PaceFrame(VkDevice device, std::vector<imp::SubmitSync>& framePacingData, uint32_t& frameIndex);
+
         inline Platform& GetPlatform() { return *m_Platform; }
         inline Queue& GetWorkQueue() { return m_Queue; }
         inline VkPhysicalDevice GetPhysicalDevice() const { return m_PhysicalDevice; }
         VkPhysicalDeviceMemoryProperties GetMemoryProperties() const;
         inline SafeResourceDestroyer& GetSafeResourceDestroyer() { return m_SafeResourceDestroyer; }
         inline VkDescriptorPool GetDescriptorPool() const { return m_DescriptorPool; }
+        inline SubmitSyncManager& GetSubmitSyncManager() { return m_SubmitSyncManager; }
 
         // Command buffers will be automatically recycled when they are submitted
         VkCommandBuffer AcquireCommandBuffer(CommandBufferType type);

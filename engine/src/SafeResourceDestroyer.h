@@ -8,7 +8,8 @@ namespace imp
     enum class VulkanResourceType
     {
         Buffer,
-        Image
+        Image,
+        Semaphore
     };
 
     struct VulkanResource
@@ -17,6 +18,7 @@ namespace imp
         union {
             VkBuffer buffer;
             VkImage image;
+            VkSemaphore semaphore;
         };
         VkDeviceMemory memory;
 

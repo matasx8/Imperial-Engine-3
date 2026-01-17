@@ -24,6 +24,9 @@ namespace imp
             case VulkanResourceType::Image:
                 vkt.vkDestroyImage(device, resource.image, nullptr);
                 break;
+            case VulkanResourceType::Semaphore:
+                vkt.vkDestroySemaphore(device, resource.semaphore, nullptr);
+                break;
             default:
                 break;
             }

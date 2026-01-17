@@ -141,7 +141,7 @@ namespace imp
                 return result;
         }
 
-        result = m_SubmitSyncManager.Initialize(m_Queue.GetDevice());
+        result = m_SubmitSyncManager.Initialize(m_Queue.GetDevice(), &m_SafeResourceDestroyer);
         if (result != VK_SUCCESS)
             return result;
 
@@ -342,6 +342,17 @@ namespace imp
             return CreateFailedSubmitSync();
         }
 
+        for (uint32_t i = 0; i < paramsCount; i++)
+        {
+            for (uint32_t j = 0; j < pParams[i].commandBufferCount; j++)
+            {
+                CommandBufferFactory::Args args { m_Queue.GetDevice() };
+                if (pParams[i].queue == m_Queue.GetGraphicsQueue())
+                    m_GraphicsCommandBufferPool->Release(pParams[i].pCommandBuffers[j], submitSync->submit);
+                else
+                    m_ComputeCommandBufferPool->Release(pParams[i].pCommandBuffers[j], submitSync->submit);
+            }
+        }
         return *submitSync;
     }
 
@@ -479,59 +490,75 @@ namespace imp
         vkDestroyInstance(m_Instance, nullptr);
     }
 
-VkResult Engine::SelectPhysicalDevice(const EngineCreateParams& params)
-{
-    uint32_t deviceCount = 0;
-    VkResult result = vkEnumeratePhysicalDevices(m_Instance, &deviceCount, nullptr);
-    if (result != VK_SUCCESS)
-        return result;
-
-    if (deviceCount == 0)
+    VkResult Engine::SelectPhysicalDevice(const EngineCreateParams& params)
     {
-        g_Log("Error: Could not find any Vulkan Physical Devices.\n");
-        return VK_ERROR_FEATURE_NOT_PRESENT;
+        uint32_t deviceCount = 0;
+        VkResult result = vkEnumeratePhysicalDevices(m_Instance, &deviceCount, nullptr);
+        if (result != VK_SUCCESS)
+            return result;
+
+        if (deviceCount == 0)
+        {
+            g_Log("Error: Could not find any Vulkan Physical Devices.\n");
+            return VK_ERROR_FEATURE_NOT_PRESENT;
+        }
+
+        std::vector<VkPhysicalDevice> devices { deviceCount };
+        result = vkEnumeratePhysicalDevices(m_Instance, &deviceCount, devices.data());
+        if (result != VK_SUCCESS)
+            return result;
+
+        VkPhysicalDevice discreteGPU = VK_NULL_HANDLE;
+        VkPhysicalDevice integratedGPU = VK_NULL_HANDLE;
+        VkPhysicalDeviceProperties discreteProps = {};
+        VkPhysicalDeviceProperties integratedProps = {};
+
+        VkPhysicalDeviceProperties props;
+        for (const auto& device : devices)
+        {
+            vkGetPhysicalDeviceProperties(device, &props);
+
+            if (props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU && discreteGPU == VK_NULL_HANDLE)
+            {
+                discreteGPU = device;
+                discreteProps = props;
+            }
+            else if (props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU && integratedGPU == VK_NULL_HANDLE)
+            {
+                integratedGPU = device;
+                integratedProps = props;
+            }
+        }
+
+        if (discreteGPU != VK_NULL_HANDLE)
+        {
+            m_PhysicalDevice = discreteGPU;
+            g_Log("Selected Physical Device (Discrete): \"%s\"\n", discreteProps.deviceName);
+            return VK_SUCCESS;
+        }
+        else if (integratedGPU != VK_NULL_HANDLE)
+        {
+            m_PhysicalDevice = integratedGPU;
+            g_Log("Selected Physical Device (Integrated): \"%s\"\n", integratedProps.deviceName);
+            return VK_SUCCESS;
+        }
+
+        return VK_ERROR_DEVICE_LOST;
     }
 
-    std::vector<VkPhysicalDevice> devices { deviceCount };
-    result = vkEnumeratePhysicalDevices(m_Instance, &deviceCount, devices.data());
-    if (result != VK_SUCCESS)
-        return result;
-
-    VkPhysicalDevice discreteGPU = VK_NULL_HANDLE;
-    VkPhysicalDevice integratedGPU = VK_NULL_HANDLE;
-    VkPhysicalDeviceProperties discreteProps = {};
-    VkPhysicalDeviceProperties integratedProps = {};
-
-    VkPhysicalDeviceProperties props;
-    for (const auto& device : devices)
+    
+    VkResult Engine::PaceFrame(VkDevice device, std::vector<imp::SubmitSync>& framePacingData, uint32_t& frameIndex)
     {
-        vkGetPhysicalDeviceProperties(device, &props);
+        if (framePacingData[frameIndex].fence == VK_NULL_HANDLE)
+            return VK_SUCCESS;
 
-        if (props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU && discreteGPU == VK_NULL_HANDLE)
+        VkResult res = m_SubmitSyncManager.WaitForSubmitSync(device, framePacingData[frameIndex], ~0ull);
+        if (res != VK_SUCCESS)
         {
-            discreteGPU = device;
-            discreteProps = props;
+            g_Log("Failed to wait for frame pacing fence with result %d\n", res);
+            return res;
         }
-        else if (props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU && integratedGPU == VK_NULL_HANDLE)
-        {
-            integratedGPU = device;
-            integratedProps = props;
-        }
-    }
 
-    if (discreteGPU != VK_NULL_HANDLE)
-    {
-        m_PhysicalDevice = discreteGPU;
-        g_Log("Selected Physical Device (Discrete): \"%s\"\n", discreteProps.deviceName);
         return VK_SUCCESS;
     }
-    else if (integratedGPU != VK_NULL_HANDLE)
-    {
-        m_PhysicalDevice = integratedGPU;
-        g_Log("Selected Physical Device (Integrated): \"%s\"\n", integratedProps.deviceName);
-        return VK_SUCCESS;
-    }
-
-    return VK_ERROR_DEVICE_LOST;
-}
 }

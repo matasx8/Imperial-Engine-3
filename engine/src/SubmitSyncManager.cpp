@@ -1,5 +1,6 @@
 #include "SubmitSyncManager.h"
 #include "Log.h"
+#include "SafeResourceDestroyer.h"
 
 #include <cassert>
 
@@ -7,7 +8,7 @@ namespace imp
 {
     VkFence FenceFactory::Create(const FenceFactory::Args& args)
     {
-        static constexpr VkFenceCreateInfo fci {VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, nullptr, 0};
+        const VkFenceCreateInfo fci {VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, nullptr, args.fcflags};
 
         VkFence fence = VK_NULL_HANDLE;
         VkResult res = vkt.vkCreateFence(args.device, &fci, nullptr, &fence);
@@ -37,8 +38,9 @@ namespace imp
         vkt.vkDestroySemaphore(args.device, semaphore, nullptr);
     }
 
-    VkResult SubmitSyncManager::Initialize(VkDevice device)
+    VkResult SubmitSyncManager::Initialize(VkDevice device, SafeResourceDestroyer* destroyer)
     {
+        m_SafeResourceDestroyer = destroyer;
         return VK_SUCCESS;
     }
 
@@ -55,7 +57,12 @@ namespace imp
 
     SubmitSync SubmitSyncManager::GetSubmitSync(VkDevice device)
     {
-        FenceFactory::Args fArgs {device};
+        return GetSubmitSync(device, 0);
+    }
+
+    SubmitSync SubmitSyncManager::GetSubmitSync(VkDevice device, VkFenceCreateFlags fcflags)
+    {
+        FenceFactory::Args fArgs {device, fcflags};
         SemaphoreFactory::Args sArgs {device};
 
         SubmitSync sync;
@@ -106,18 +113,22 @@ namespace imp
         for (int i = 0; i < numSyncsToRecycle; i++)
         {
             const auto& s = m_Syncs.front();
-            vkt.vkWaitForFences(device, 1, &s.fence, VK_TRUE, 0); // al previous fences must be signalled already
+            vkt.vkWaitForFences(device, 1, &s.fence, VK_TRUE, 0); // all previous fences must be signalled already
             res = vkt.vkResetFences(device, 1, &s.fence);
             if (res == VK_SUCCESS)
                 m_FencePool.Release(s.fence);
 
-            if (i != numSyncsToRecycle - 1)
-                m_SemaphorePool.Release(s.semaphore);
-            else // We can't recycle the very last semaphore since it'd be in the pending state
-                vkt.vkDestroySemaphore(device, s.semaphore, nullptr);
+            VulkanResource semaphoreResource {};
+            semaphoreResource.type = VulkanResourceType::Semaphore;
+            semaphoreResource.semaphore = s.semaphore;
+
+            // ensure resource is not destroyed too early
+            m_SafeResourceDestroyer->EnqueueResourceForDestruction(semaphoreResource, sync.submit + 3);
 
             m_Syncs.pop_front();
         }
+
+        m_SafeResourceDestroyer->ProcessQueue(device, m_LastPoint);
 
         return res;
     }

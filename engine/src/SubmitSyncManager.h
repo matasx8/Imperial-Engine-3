@@ -6,11 +6,14 @@
 
 namespace imp
 {
+    class SafeResourceDestroyer;
+
     struct FenceFactory
     {
         struct Args
         {
             VkDevice device;
+            VkFenceCreateFlags fcflags;
         };
 
         static VkFence Create(const Args& args);
@@ -44,12 +47,13 @@ namespace imp
 
         SubmitSyncManager() = default;
 
-        VkResult Initialize(VkDevice device);
+        VkResult Initialize(VkDevice device, SafeResourceDestroyer* destroyer);
         VkResult Shutdown(VkDevice device);
 
         // Increment the SubmitSync on the Timeline
         // SubmitSync0 < SubmitSync1
         SubmitSync GetSubmitSync(VkDevice device);
+        SubmitSync GetSubmitSync(VkDevice device, VkFenceCreateFlags fcflags);
         const SubmitSync* GetLastSubmitSync() const { return m_Syncs.size() ? &m_Syncs.back() : nullptr; }
         uint64_t GetLastSyncedPoint() const { return m_LastPoint; }
 
@@ -67,5 +71,7 @@ namespace imp
 
         FencePool m_FencePool {};
         SemaphorePool m_SemaphorePool {};
+
+        SafeResourceDestroyer* m_SafeResourceDestroyer = nullptr;
     };
 }

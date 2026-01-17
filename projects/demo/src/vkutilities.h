@@ -92,4 +92,6 @@ namespace VU
     VkResult CreatePhongPipeline(VkDevice device, VkShaderModule vertModule, VkShaderModule fragModule, PhongPipeline& pipeline);
 
     void UpdateRenderingDataDescriptorSetByCopy(imp::Engine& engine, const RenderingDescriptors& renderingData, VkCommandBuffer cb, const std::vector<DrawData>& drawData);
+
+    void PaceFrame(VkDevice device, std::vector<imp::SubmitSync>& framePacingData, const imp::SubmitSync& currentFrameSync, uint32_t& frameIndex, uint32_t maxFramesInFlight, imp::SubmitSyncManager& submitSyncManager);
 }

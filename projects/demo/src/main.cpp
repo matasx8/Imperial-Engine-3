@@ -104,6 +104,11 @@ int main(int argc, char* argv[])
         VU::CreateFramebuffer(device, phongPipeline.renderPass, 1, &attachment, window.GetWidth(), window.GetHeight(), framebuffers[i]);
     }
 
+    // Setting up simples form of frame pacing
+    std::vector<imp::SubmitSync> simpleFramePacing {};
+    uint32_t frameIndex = 0;
+    simpleFramePacing.resize(swapchain.GetSwapchainImageCount());
+
     // Main loop
     auto frameStartTime = std::chrono::high_resolution_clock::now();
     while (!engine.GetPlatform().GetWindow().ShouldClose())
@@ -112,6 +117,8 @@ int main(int argc, char* argv[])
         double frameTimeMs = std::chrono::duration<double, std::milli>(frameEndTime - frameStartTime).count();
         frameStartTime = frameEndTime;
         engine.GetPlatform().GetWindow().UpdateInfo(frameTimeMs);
+        
+        engine.PaceFrame(device, simpleFramePacing, frameIndex);
 
         uint32_t imageIndex = 0;
         engine.AcquireNextImage(engine.GetPlatform().GetWindow(), &imageIndex);
@@ -158,7 +165,10 @@ int main(int argc, char* argv[])
         submitParams.commandBufferCount = 1;
         submitParams.pCommandBuffers = &cb;
         submitParams.queue = engine.GetWorkQueue().GetGraphicsQueue();
-        engine.Submit(&submitParams, 1);
+        imp::SubmitSync sync = engine.Submit(&submitParams, 1);
+
+        simpleFramePacing[frameIndex] = sync;
+        frameIndex = (frameIndex + 1) % simpleFramePacing.size();
 
         engine.Present(engine.GetPlatform().GetWindow(), imageIndex);
     }
