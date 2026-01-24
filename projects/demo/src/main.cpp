@@ -36,7 +36,7 @@ int main(int argc, char* argv[])
     platformParams.pWindowInitParams = &windowInitParams;
 
     std::initializer_list<const char*> requiredDeviceExtensions = {
-
+        VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME
     };
 
     imp::EngineCreateParams createParams {};
@@ -56,6 +56,11 @@ int main(int argc, char* argv[])
     VkPhysicalDeviceVulkan12Features features12 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES };
     features12.drawIndirectCount = VK_TRUE;
     vulkan11Features.pNext = &features12;
+
+    VkPhysicalDeviceSynchronization2Features synchronization2Features {};
+    synchronization2Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES;
+    synchronization2Features.synchronization2 = VK_TRUE;
+    features12.pNext = &synchronization2Features;
 
 
     imp::Engine engine {};
@@ -98,10 +103,18 @@ int main(int argc, char* argv[])
 
     std::vector<VkFramebuffer> framebuffers;
     framebuffers.resize(swapchain.GetSwapchainImageCount());
+    VU::CreateImage(engine.GetPhysicalDevice(), device, window.GetWidth(), window.GetHeight(),
+        VK_FORMAT_D32_SFLOAT, VK_IMAGE_TILING_OPTIMAL,
+        VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+        phongPipeline.depthImage);
+    VU::CreateImageView(device, phongPipeline.depthImage.image, VK_FORMAT_D32_SFLOAT,
+        VK_IMAGE_ASPECT_DEPTH_BIT, phongPipeline.depthImageView);
     for (uint32_t i = 0; i < swapchain.GetSwapchainImageCount(); i++)
     {
         VkImageView attachment = swapchain.GetSwapchainImageView(i);
-        VU::CreateFramebuffer(device, phongPipeline.renderPass, 1, &attachment, window.GetWidth(), window.GetHeight(), framebuffers[i]);
+        std::array<VkImageView, 2> attachments = { attachment, phongPipeline.depthImageView };
+        VU::CreateFramebuffer(device, phongPipeline.renderPass, attachments.size(), attachments.data(), window.GetWidth(), window.GetHeight(), framebuffers[i]);
     }
 
     // Setting up simples form of frame pacing
@@ -130,11 +143,12 @@ int main(int argc, char* argv[])
         VU::UpdateRenderingDataDescriptorSetByCopy(engine, renderingData, cb, { { glm::mat4(1.0f) } });
         VU::UpdateGlobalDataDescriptorSetByCopy(engine, globals, cb);
 
-        std::array<VkClearValue, 1> clearValues {};
+        std::array<VkClearValue, 2> clearValues {};
         clearValues[0].color.float32[0] = 0.0f;
         clearValues[0].color.float32[1] = 0.0f;
         clearValues[0].color.float32[2] = 0.0f;
         clearValues[0].color.float32[3] = 1.0f;
+        clearValues[1].depthStencil.depth = 1.0f;
 
         VkViewport viewport {};
         viewport.width = static_cast<float>(window.GetWidth());
@@ -150,6 +164,32 @@ int main(int argc, char* argv[])
         rpbi.clearValueCount = static_cast<uint32_t>(clearValues.size());
         rpbi.pClearValues = clearValues.data();
 
+        std::array<VkImageMemoryBarrier, 2> imageBarriers {};
+        imageBarriers[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        imageBarriers[0].srcAccessMask = 0;
+        imageBarriers[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT;
+        imageBarriers[0].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        imageBarriers[0].newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        imageBarriers[0].image = swapchain.GetSwapchainImage(imageIndex);
+        imageBarriers[0].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        imageBarriers[0].subresourceRange.levelCount = 1;
+        imageBarriers[0].subresourceRange.layerCount = 1;
+        imageBarriers[1].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        imageBarriers[1].srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        imageBarriers[1].dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        imageBarriers[1].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        imageBarriers[1].newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        imageBarriers[1].image = phongPipeline.depthImage.image;
+        imageBarriers[1].subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+        imageBarriers[1].subresourceRange.levelCount = 1;
+        imageBarriers[1].subresourceRange.layerCount = 1;
+        vkCmdPipelineBarrier(cb,
+            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+            0,
+            0, nullptr,
+            0, nullptr,
+            static_cast<uint32_t>(imageBarriers.size()), imageBarriers.data());
+
         vkCmdBeginRenderPass(cb, &rpbi, VK_SUBPASS_CONTENTS_INLINE);
         vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, phongPipeline.pipeline);
         vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, phongPipeline.pipelineLayout, 0, 1, &globals.descriptorSet, 0, nullptr);
@@ -159,7 +199,7 @@ int main(int argc, char* argv[])
         vkCmdBindIndexBuffer(cb, scenel.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
         vkCmdDrawIndexed(cb, scenel.indexCount, 1, 0, 0, 0);
         vkCmdEndRenderPass(cb);
-
+      
         vkEndCommandBuffer(cb);
         imp::SubmitParams submitParams {};
         submitParams.commandBufferCount = 1;

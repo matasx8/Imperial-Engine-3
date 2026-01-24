@@ -74,6 +74,22 @@ namespace VU
         return VK_SUCCESS;
     }
 
+    VkResult CreateImageView(VkDevice device, VkImage image, VkFormat format, VkImageAspectFlags aspectFlags, VkImageView& imageView)
+    {
+        VkImageViewCreateInfo ivci {};
+        ivci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        ivci.image = image;
+        ivci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        ivci.format = format;
+        ivci.subresourceRange.aspectMask = aspectFlags;
+        ivci.subresourceRange.baseMipLevel = 0;
+        ivci.subresourceRange.levelCount = 1;
+        ivci.subresourceRange.baseArrayLayer = 0;
+        ivci.subresourceRange.layerCount = 1;
+
+        return vkCreateImageView(device, &ivci, nullptr, &imageView);
+    }
+
     VkResult CreateFramebuffer(VkDevice device, VkRenderPass rp, uint32_t attachmentCount, const VkImageView* pAttachments, uint32_t width, uint32_t height, VkFramebuffer& framebuffer)
     {
         VkFramebufferCreateInfo fbci {};
@@ -381,10 +397,10 @@ namespace VU
         VkMemoryBarrier memoryBarrier {};
         memoryBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
         memoryBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-        memoryBarrier.dstAccessMask = VK_ACCESS_UNIFORM_READ_BIT;
+        memoryBarrier.dstAccessMask = VK_ACCESS_UNIFORM_READ_BIT | VK_ACCESS_SHADER_READ_BIT;
 
         vkCmdPipelineBarrier(cb,
-            VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
+            VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
             0,
             1, &memoryBarrier,
             0, nullptr,
@@ -404,6 +420,18 @@ namespace VU
         vkMapMemory(engine.GetWorkQueue().GetDevice(), stagingBuffer.memory, 0, VK_WHOLE_SIZE, 0, &data);
         memcpy(data, drawData.data(), sizeof(DrawData) * drawData.size());
         vkUnmapMemory(engine.GetWorkQueue().GetDevice(), stagingBuffer.memory);
+
+        VkMemoryBarrier memoryBarrier {};
+        memoryBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+        memoryBarrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_UNIFORM_READ_BIT;
+        memoryBarrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+
+        vkCmdPipelineBarrier(cb,
+            VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+            0,
+            1, &memoryBarrier,
+            0, nullptr,
+            0, nullptr);
 
         VkBufferCopy copyRegion {};
         copyRegion.size = sizeof(DrawData) * drawData.size();
@@ -545,7 +573,10 @@ namespace VU
 
         VkPipelineDepthStencilStateCreateInfo pdsci {};
         pdsci.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
-
+        pdsci.depthTestEnable = VK_TRUE;
+        pdsci.depthWriteEnable = VK_TRUE;
+        pdsci.depthCompareOp = VK_COMPARE_OP_LESS;
+        
         std::array<VkDynamicState, 2> dynamicStates = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
 
         VkPipelineDynamicStateCreateInfo pdsci2 {};
@@ -555,22 +586,31 @@ namespace VU
 
         VkFormat colorFormat = VK_FORMAT_B8G8R8A8_UNORM;
 
-        std::array<VkAttachmentDescription, 1> colorAttachmentDescs {};
+        std::array<VkAttachmentDescription, 2> colorAttachmentDescs {};
         colorAttachmentDescs[0].format = colorFormat;
         colorAttachmentDescs[0].samples = VK_SAMPLE_COUNT_1_BIT;
         colorAttachmentDescs[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
         colorAttachmentDescs[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
         colorAttachmentDescs[0].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
         colorAttachmentDescs[0].finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+        colorAttachmentDescs[1].format = VK_FORMAT_D32_SFLOAT;
+        colorAttachmentDescs[1].samples = VK_SAMPLE_COUNT_1_BIT;
+        colorAttachmentDescs[1].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        colorAttachmentDescs[1].storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        colorAttachmentDescs[1].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        colorAttachmentDescs[1].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
-        std::array<VkAttachmentReference, 1> colorAttachmentRefs {};
+        std::array<VkAttachmentReference, 2> colorAttachmentRefs {};
         colorAttachmentRefs[0].attachment = 0;
         colorAttachmentRefs[0].layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        colorAttachmentRefs[1].attachment = 1;
+        colorAttachmentRefs[1].layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
         VkSubpassDescription subpassDesc {};
         subpassDesc.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-        subpassDesc.colorAttachmentCount = static_cast<uint32_t>(colorAttachmentRefs.size());
+        subpassDesc.colorAttachmentCount = static_cast<uint32_t>(1);
         subpassDesc.pColorAttachments = colorAttachmentRefs.data();
+        subpassDesc.pDepthStencilAttachment = &colorAttachmentRefs[1];
 
         VkRenderPassCreateInfo prci {};
         prci.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
@@ -601,4 +641,38 @@ namespace VU
         result = vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &gpci, nullptr, &pipeline.pipeline);
         return result;
     };
+
+    void InsertPipelineBarrier(VkCommandBuffer cb, VkPipelineStageFlags srcStage, VkPipelineStageFlags dstStage
+        , VkAccessFlags srcAccess, VkAccessFlags dstAccess)
+    {
+        VkMemoryBarrier memoryBarrier {};
+        memoryBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+        memoryBarrier.srcAccessMask = srcAccess;
+        memoryBarrier.dstAccessMask = dstAccess;
+
+        vkCmdPipelineBarrier(cb,
+            srcStage, dstStage,
+            0,
+            1, &memoryBarrier,
+            0, nullptr,
+            0, nullptr);
+    }
+
+    void InsertPipelineBarrier2(VkCommandBuffer cb, VkPipelineStageFlags2 srcStage, VkPipelineStageFlags2 dstStage
+        , VkAccessFlags2 srcAccess, VkAccessFlags2 dstAccess)
+    {
+        VkMemoryBarrier2 memoryBarrier {};
+        memoryBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
+        memoryBarrier.srcStageMask = srcStage;
+        memoryBarrier.srcAccessMask = srcAccess;
+        memoryBarrier.dstStageMask = dstStage;
+        memoryBarrier.dstAccessMask = dstAccess;
+
+        VkDependencyInfo dependencyInfo {};
+        dependencyInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        dependencyInfo.memoryBarrierCount = 1;
+        dependencyInfo.pMemoryBarriers = &memoryBarrier;
+
+        vkCmdPipelineBarrier2KHR(cb, &dependencyInfo);
+    }
 }

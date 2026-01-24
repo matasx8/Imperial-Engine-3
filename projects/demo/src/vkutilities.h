@@ -66,6 +66,8 @@ namespace VU
         VkPipeline pipeline;
         VkPipelineLayout pipelineLayout;
         VkRenderPass renderPass;
+        Image depthImage;
+        VkImageView depthImageView;
 
         GlobalUniforms* pGlobalUniforms;
         RenderingDescriptors* pRenderingDescriptors;
@@ -74,6 +76,7 @@ namespace VU
     VkResult CreateShaderModule(VkDevice device, const uint32_t* source, size_t codeSize, VkShaderModule& shader);
 
     VkResult CreateImage(VkPhysicalDevice pDevice, VkDevice device, uint32_t width, uint32_t height, VkFormat format, VkImageTiling tiling, VkImageUsageFlags usage, VkMemoryPropertyFlags properties, Image& image);
+VkResult CreateImageView(VkDevice device, VkImage image, VkFormat format, VkImageAspectFlags aspectFlags, VkImageView& imageView);
 
     VkResult CreateFramebuffer(VkDevice device, VkRenderPass rp, uint32_t attachmentCount, const VkImageView* pAttachments, uint32_t width, uint32_t height, VkFramebuffer& framebuffer);
 
@@ -94,4 +97,10 @@ namespace VU
     void UpdateRenderingDataDescriptorSetByCopy(imp::Engine& engine, const RenderingDescriptors& renderingData, VkCommandBuffer cb, const std::vector<DrawData>& drawData);
 
     void PaceFrame(VkDevice device, std::vector<imp::SubmitSync>& framePacingData, const imp::SubmitSync& currentFrameSync, uint32_t& frameIndex, uint32_t maxFramesInFlight, imp::SubmitSyncManager& submitSyncManager);
+
+    void InsertPipelineBarrier(VkCommandBuffer cb, VkPipelineStageFlags srcStage, VkPipelineStageFlags dstStage
+        , VkAccessFlags srcAccess, VkAccessFlags dstAccess);
+
+    void InsertPipelineBarrier2(VkCommandBuffer cb, VkPipelineStageFlags2 srcStage, VkPipelineStageFlags2 dstStage
+        , VkAccessFlags2 srcAccess, VkAccessFlags2 dstAccess);
 }

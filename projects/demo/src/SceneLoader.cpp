@@ -141,6 +141,13 @@ namespace SceneLoader
         copyRegion.size = indexBufferSize;
         vkCmdCopyBuffer(cb, indexStagingBuffer.buffer, scene.indexBuffer.buffer, 1, &copyRegion);
 
+        // Add memory barrier to ensure copies are visible before reads
+        VU::InsertPipelineBarrier2(cb,
+            VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_INDEX_INPUT_BIT,
+            VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_INDEX_READ_BIT);
+
         // Submit copy commands
         vkEndCommandBuffer(cb);
         imp::SubmitParams submitParams {};

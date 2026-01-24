@@ -314,7 +314,7 @@ namespace imp
 
         std::vector<VkSubmitInfo> submits;
         submits.resize(paramsCount);
-        VkPipelineStageFlags waitMasks = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
+        VkPipelineStageFlags waitMasks = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT;
 
         for (uint32_t i = 0; i < paramsCount; i++)
         {
