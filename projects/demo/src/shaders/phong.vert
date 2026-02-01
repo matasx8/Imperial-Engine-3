@@ -13,7 +13,7 @@ struct Vertex
 {
 	float vx, vy, vz;
 	float nx, ny, nz;
-    float pad0, pad1;
+    float tu, tv;
 };
 
 struct DrawData

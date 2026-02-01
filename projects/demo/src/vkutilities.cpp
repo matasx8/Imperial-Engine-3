@@ -2,6 +2,7 @@
 #define GLM_FORCE_DEPTH_ZERO_TO_ONE
 #define GLM_ENABLE_EXPERIMENTAL
 #include "vkutilities.h"
+#include "SceneLoader.h"
 
 #include <glm/ext/matrix_transform.hpp>
 #include <glm/gtx/quaternion.hpp>
@@ -149,146 +150,6 @@ namespace VU
         return VK_SUCCESS;
     }
 
-    VkResult GenerateCubeMesh(VkPhysicalDevice pDevice, VkDevice device, Buffer& vertexBuffer
-        , Buffer& indexBuffer, uint32_t& indexCount, imp::Engine& engine)
-    {
-        // Define cube vertices with positions and normals
-        std::vector<Vertex> vertices = {
-        // +X face
-            {{ 0.5f, -0.5f, -0.5f}, { 1,  0,  0}, 0.0f, 0.0f},
-            {{ 0.5f,  0.5f, -0.5f}, { 1,  0,  0}, 0.0f, 0.0f},
-            {{ 0.5f,  0.5f,  0.5f}, { 1,  0,  0}, 0.0f, 0.0f},
-            {{ 0.5f, -0.5f,  0.5f}, { 1,  0,  0}, 0.0f, 0.0f},
-
-            // -X face
-            {{-0.5f, -0.5f,  0.5f}, {-1,  0,  0}, 0.0f, 0.0f},
-            {{-0.5f,  0.5f,  0.5f}, {-1,  0,  0}, 0.0f, 0.0f},
-            {{-0.5f,  0.5f, -0.5f}, {-1,  0,  0}, 0.0f, 0.0f},
-            {{-0.5f, -0.5f, -0.5f}, {-1,  0,  0}, 0.0f, 0.0f},
-
-            // +Y face
-            {{-0.5f,  0.5f, -0.5f}, { 0,  1,  0}, 0.0f, 0.0f},
-            {{-0.5f,  0.5f,  0.5f}, { 0,  1,  0}, 0.0f, 0.0f},
-            {{ 0.5f,  0.5f,  0.5f}, { 0,  1,  0}, 0.0f, 0.0f},
-            {{ 0.5f,  0.5f, -0.5f}, { 0,  1,  0}, 0.0f, 0.0f},
-
-            // -Y face
-            {{-0.5f, -0.5f,  0.5f}, { 0, -1,  0}, 0.0f, 0.0f},
-            {{-0.5f, -0.5f, -0.5f}, { 0, -1,  0}, 0.0f, 0.0f},
-            {{ 0.5f, -0.5f, -0.5f}, { 0, -1,  0}, 0.0f, 0.0f},
-            {{ 0.5f, -0.5f,  0.5f}, { 0, -1,  0}, 0.0f, 0.0f},
-
-            // +Z face
-            {{-0.5f, -0.5f,  0.5f}, { 0,  0,  1}, 0.0f, 0.0f},
-            {{ 0.5f, -0.5f,  0.5f}, { 0,  0,  1}, 0.0f, 0.0f},
-            {{ 0.5f,  0.5f,  0.5f}, { 0,  0,  1}, 0.0f, 0.0f},
-            {{-0.5f,  0.5f,  0.5f}, { 0,  0,  1}, 0.0f, 0.0f},
-
-            // -Z face
-            {{ 0.5f, -0.5f, -0.5f}, { 0,  0, -1}, 0.0f, 0.0f},
-            {{-0.5f, -0.5f, -0.5f}, { 0,  0, -1}, 0.0f, 0.0f},
-            {{-0.5f,  0.5f, -0.5f}, { 0,  0, -1}, 0.0f, 0.0f},
-            {{ 0.5f,  0.5f, -0.5f}, { 0,  0, -1}, 0.0f, 0.0f},
-        };
-
-        // Define cube indices
-        const std::vector<uint32_t> indices = {
-            0,  1,  2,   0,  2,  3,    // +X
-            4,  5,  6,   4,  6,  7,    // -X
-            8,  9, 10,   8, 10, 11,    // +Y
-            12,13,14,   12,14,15,     // -Y
-            16,17,18,   16,18,19,     // +Z
-            20,21,22,   20,22,23      // -Z
-        };
-
-        indexCount = static_cast<uint32_t>(indices.size());
-
-        // Create vertex staging buffer
-        Buffer vertexStagingBuffer;
-        VkResult result = CreateBuffer(pDevice, device,
-                                        sizeof(Vertex) * vertices.size(),
-                                        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                                        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                                        vertexStagingBuffer);
-        if (result != VK_SUCCESS)
-            return result;
-
-        // Map and copy vertex data
-        void* vertexData;
-        vkMapMemory(device, vertexStagingBuffer.memory, 0, VK_WHOLE_SIZE, 0, &vertexData);
-        memcpy(vertexData, vertices.data(), sizeof(Vertex) * vertices.size());
-        vkUnmapMemory(device, vertexStagingBuffer.memory);
-
-        // Create index buffer
-        Buffer indexStagingBuffer;
-        result = CreateBuffer(pDevice, device,
-                                sizeof(uint32_t) * indices.size(),
-                                        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                                        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                                        indexStagingBuffer);
-
-        if (result != VK_SUCCESS)
-            return result;
-
-        // Map and copy index data
-        void* indexData;
-        vkMapMemory(device, indexStagingBuffer.memory, 0, VK_WHOLE_SIZE, 0, &indexData);
-        memcpy(indexData, indices.data(), sizeof(uint32_t) * indices.size());
-        vkUnmapMemory(device, indexStagingBuffer.memory);
-
-        // Create device local vertex buffer
-        result = CreateBuffer(pDevice, device,
-                                sizeof(Vertex) * vertices.size(),
-                                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                                vertexBuffer);
-
-        if (result != VK_SUCCESS)
-            return result;
-
-        // Create device local index buffer
-        result = CreateBuffer(pDevice, device,
-                                sizeof(uint32_t) * indices.size(),
-                                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
-                                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                                indexBuffer);
-
-        if (result != VK_SUCCESS)
-            return result;
-
-         VkCommandBuffer cb = engine.AcquireCommandBuffer(imp::CommandBufferType::Graphics);
-
-        // Copy vertex data to device local buffer
-        VkBufferCopy copyRegion {};
-        copyRegion.size = sizeof(Vertex) * vertices.size();
-        vkCmdCopyBuffer(cb, vertexStagingBuffer.buffer, vertexBuffer.buffer, 1, &copyRegion);
-
-        // Copy index data to device local buffer
-        copyRegion.size = sizeof(uint32_t) * indices.size();
-        vkCmdCopyBuffer(cb, indexStagingBuffer.buffer, indexBuffer.buffer, 1, &copyRegion);
-
-        // Submit copy commands
-        vkEndCommandBuffer(cb);
-        imp::SubmitParams submitParams {};
-        submitParams.commandBufferCount = 1;
-        submitParams.pCommandBuffers = &cb;
-        submitParams.queue = engine.GetWorkQueue().GetGraphicsQueue();
-        imp::SubmitSync sync = engine.Submit(&submitParams, 1);
-
-        // Enqueue staging buffers for deferred destruction
-        imp::SafeResourceDestroyer& destroyer = engine.GetSafeResourceDestroyer();
-        imp::VulkanResource res {};
-        res.buffer = vertexStagingBuffer.buffer;
-        res.memory = vertexStagingBuffer.memory;
-        res.type = imp::VulkanResourceType::Buffer;
-        destroyer.EnqueueResourceForDestruction(res, sync.submit);
-        res.buffer = indexStagingBuffer.buffer;
-        res.memory = indexStagingBuffer.memory;
-        destroyer.EnqueueResourceForDestruction(res, sync.submit);
-
-        return VK_SUCCESS;
-    }
-
      VkResult SetupGlobalUniforms(imp::Engine& engine, GlobalUniforms& globals)
      {
         VkDevice device = engine.GetWorkQueue().GetDevice();
@@ -344,15 +205,26 @@ namespace VU
         vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
      }
 
-     void InitializeSceneData(imp::Engine& engine, SceneData& scene)
+     void InitializeSceneData(imp::Engine& engine, SceneData& scene, SceneLoader::Scene& scenel)
      {
+        // Can get from scene loader later
         scene.lightPos = glm::vec3(2.0f, 2.0f, 2.0f);
 
         static constexpr float defaultCameraYRotationRad = 0.0f;
-        scene.cameraTransform = glm::rotate(glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 0.0f, 15.0f)), defaultCameraYRotationRad, glm::vec3(0.0f, 1.0f, 0.0f));
+        if (scenel.cameraWasLoaded)
+            scene.cameraTransform = scenel.camera.Model;
+        else
+            scene.cameraTransform = glm::rotate(glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 0.0f, 15.0f)), defaultCameraYRotationRad, glm::vec3(0.0f, 1.0f, 0.0f));
         
         imp::Window& window = engine.GetPlatform().GetWindow();
         scene.projection = glm::perspective(glm::radians(90.0f), (float)window.GetWidth() / (float)window.GetHeight(), 1.0f, 1000.0f);
+    
+        for (const auto& transform : scenel.transforms)
+        {
+            DrawData drawData {};
+            drawData.transform = transform;
+            scene.drawDatas.push_back(drawData);
+        }
     }
 
     void UpdateCamera(imp::Window& window, SceneData& scene, GlobalUniformsData& globalsData, double delta)
@@ -438,10 +310,11 @@ namespace VU
         vkCmdCopyBuffer(cb, stagingBuffer.buffer, renderingData.drawDataBuffer.buffer, 1, &copyRegion);
     }
 
-    VkResult SetupRenderingDescriptorSet(imp::Engine& engine, RenderingDescriptors& data, Buffer& vertexBuffer
-        , Buffer& indexBuffer, uint64_t meshCount)
+    VkResult SetupRenderingDescriptorSet(imp::Engine& engine, RenderingDescriptors& data, SceneLoader::Scene& scenel)
     {
         VkDevice device = engine.GetWorkQueue().GetDevice();
+
+        const uint64_t meshCount = scenel.entities.size();
 
         Buffer drawDataBuffer {};
         VkResult result = CreateBuffer(engine.GetPhysicalDevice(), device,
@@ -484,9 +357,9 @@ namespace VU
         vkAllocateDescriptorSets(device, &dsai, &data.descriptorSet);
 
         std::array<VkDescriptorBufferInfo, 3> bi {};
-        bi[0].buffer = vertexBuffer.buffer;
+        bi[0].buffer = scenel.vertexBuffer.buffer;
         bi[0].range = VK_WHOLE_SIZE;
-        bi[1].buffer = indexBuffer.buffer;
+        bi[1].buffer = scenel.indexBuffer.buffer;
         bi[1].range = VK_WHOLE_SIZE;
         bi[2].buffer = drawDataBuffer.buffer;
         bi[2].range = VK_WHOLE_SIZE;

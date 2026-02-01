@@ -15,7 +15,7 @@ namespace SceneLoader
 {
     static inline std::atomic_uint32_t temporaryMeshCounter = 0;
 
-    static bool ParseGLTF(const std::filesystem::path& path, std::vector<MeshCreationRequest>& reqs)
+    static bool ParseGLTF(const std::filesystem::path& path, std::vector<MeshCreationRequest>& reqs, Scene& scene)
     {
         if (!std::filesystem::exists(path))
             return false;
@@ -41,7 +41,7 @@ namespace SceneLoader
         for (const auto& nodeIdx : model.scenes.front().nodes)
         {
             const auto& node = model.nodes[nodeIdx];
-            LoadGLTFNode(node, model, meshIdMap, reqs);
+            LoadGLTFNode(node, model, meshIdMap, reqs, scene);
         }
 
         return true;
@@ -52,7 +52,7 @@ namespace SceneLoader
     bool LoadScene(const std::filesystem::path& path, imp::Engine& engine, Scene& scene)
     {
         std::vector<MeshCreationRequest> reqs;
-        if (!ParseGLTF(path, reqs))
+        if (!ParseGLTF(path, reqs, scene))
             return false;
 
         VkPhysicalDevice pDevice = engine.GetPhysicalDevice();
@@ -62,12 +62,17 @@ namespace SceneLoader
         VkDeviceSize indexBufferSize = 0;
         for (const auto& req : reqs)
         {
+            Mesh mesh {};
+            mesh.id = scene.meshes.size();
+            mesh.vertexOffset = static_cast<uint32_t>(vertexBufferSize / sizeof(VU::Vertex));
+            mesh.indexOffset = static_cast<uint32_t>(indexBufferSize / sizeof(uint32_t));
+            mesh.vertexCount = static_cast<uint32_t>(req.vertices.size());
+            mesh.indexCount = static_cast<uint32_t>(req.indices.size());
+            scene.meshes.push_back(mesh);
+
             vertexBufferSize += sizeof(VU::Vertex) * req.vertices.size();
             indexBufferSize += sizeof(uint32_t) * req.indices.size();
         }
-
-        // temporary, actually store index count per mesh
-        scene.indexCount = static_cast<uint32_t>(indexBufferSize / sizeof(uint32_t));
 
         // Create vertex staging buffer
         VU::Buffer vertexStagingBuffer;
@@ -171,7 +176,7 @@ namespace SceneLoader
     }
 
     void LoadGLTFNode(const tinygltf::Node& node, const tinygltf::Model& model, std::unordered_map<uint32_t, uint32_t>& meshIdMap
-        , std::vector<MeshCreationRequest>& reqs)
+        , std::vector<MeshCreationRequest>& reqs, Scene& scene)
     {
         auto transform = glm::mat4x4(1.0f);
 
@@ -179,18 +184,25 @@ namespace SceneLoader
 			transform = glm::make_mat4x4(node.matrix.data());
 		else
 		{
-			if (node.translation.size())
-				transform = glm::translate(transform, glm::vec3(glm::make_vec3(node.translation.data())));
+			if (node.scale.size())
+				transform = glm::scale(transform, glm::vec3(glm::make_vec3(node.scale.data())));
 
 			if (node.rotation.size())
 				transform *= glm::mat4((glm::quat)glm::make_quat(node.rotation.data()));
 
-			if (node.scale.size())
-				transform = glm::scale(transform, glm::vec3(glm::make_vec3(node.scale.data())));
+			if (node.translation.size())
+				transform = glm::translate(transform, glm::vec3(glm::make_vec3(node.translation.data())));
 		}
 
+        if (std::string(node.name).find("Camera") != std::string::npos &&
+            scene.cameraWasLoaded == false)
+        {
+            scene.camera.Model = transform;
+            scene.cameraWasLoaded = true;
+        }
+
         for (const auto child : node.children)
-            LoadGLTFNode(model.nodes[child], model, meshIdMap, reqs);
+            LoadGLTFNode(model.nodes[child], model, meshIdMap, reqs, scene);
 
         // This is so we don't load geometry for linked/duplicate meshes.
         if (meshIdMap.find(node.mesh) != meshIdMap.end())
@@ -205,6 +217,15 @@ namespace SceneLoader
                 req.id = meshIdMap[node.mesh] + primIndex;
                 req.materialId = model.meshes[node.mesh].primitives.front().material;
                 reqs.push_back(req);
+
+                scene.transforms.push_back(transform);
+
+                Entity entity;
+                entity.id = static_cast<uint32_t>(scene.entities.size());
+                entity.meshId = req.id;
+                entity.transformId = static_cast<uint32_t>(scene.transforms.size() - 1);
+                entity.materialId = req.materialId;
+                scene.entities.push_back(entity);
 
                 primIndex++;
             }
@@ -262,8 +283,10 @@ namespace SceneLoader
                     std::memcpy(&vertex.position, &positionBuffer[i * 3], sizeof(float) * 3);
                     std::memcpy(&vertex.normals, &normalsBuffer[i * 3], sizeof(float) * 3);
 
-                    //vertex.tu = prim.attributes.find("TEXCOORD_0") != prim.attributes.end() ? meshopt_quantizeHalf(texCoordsBuffer[i * 2]) : 0.0f;
-                    //vertex.tv = prim.attributes.find("TEXCOORD_0") != prim.attributes.end() ? meshopt_quantizeHalf(texCoordsBuffer[i * 2 + 1]) : 0.0f;
+                    vertex.normals.x = prim.attributes.find("TEXCOORD_0") != prim.attributes.end() ? texCoordsBuffer[i * 2] : 0.0f;
+                    vertex.normals.y = prim.attributes.find("TEXCOORD_0") != prim.attributes.end() ? texCoordsBuffer[i * 2 + 1] : 0.0f;
+                    //vertex.normals.x = prim.attributes.find("TEXCOORD_0") != prim.attributes.end() ? meshopt_quantizeHalf(texCoordsBuffer[i * 2]) : 0.0f;
+                    //vertex.normals.y = prim.attributes.find("TEXCOORD_0") != prim.attributes.end() ? meshopt_quantizeHalf(texCoordsBuffer[i * 2 + 1]) : 0.0f;
 
                     req.vertices.push_back(vertex);
                 }
@@ -305,6 +328,16 @@ namespace SceneLoader
 					printf("[Scene Loader] Error: Index component type %i not supported!\n", accessor.componentType);
 					return;
 				}
+
+                
+                scene.transforms.push_back(transform);
+
+                Entity entity;
+                entity.id = static_cast<uint32_t>(scene.entities.size());
+                entity.meshId = req.id;
+                entity.transformId = static_cast<uint32_t>(scene.transforms.size() - 1);
+                entity.materialId = req.materialId;
+                scene.entities.push_back(entity);
 
 				reqs.push_back(req);
             }

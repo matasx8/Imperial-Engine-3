@@ -1,6 +1,13 @@
+#pragma once
 #include "Engine.h"
 
 #include <glm/glm.hpp>
+#include <vector>
+
+namespace SceneLoader
+{
+    struct Scene;
+}
 
 namespace VU
 {
@@ -20,8 +27,7 @@ namespace VU
     {
         glm::vec3 position;
         glm::vec3 normals;
-        float pad0;
-        float pad1;
+        glm::vec2 uvs;
     };
     static_assert(sizeof(Vertex) == 32);
 
@@ -42,16 +48,18 @@ namespace VU
         GlobalUniformsData data;
     };
 
+    struct DrawData
+    {
+        glm::mat4 transform;
+    };
+
     struct SceneData
     {
         glm::mat4 cameraTransform;
         glm::mat4 projection;
         glm::vec3 lightPos;
-    };
 
-    struct DrawData
-    {
-        glm::mat4 transform;
+        std::vector<DrawData> drawDatas;
     };
 
     struct RenderingDescriptors
@@ -82,15 +90,11 @@ VkResult CreateImageView(VkDevice device, VkImage image, VkFormat format, VkImag
 
     VkResult CreateBuffer(VkPhysicalDevice pDevice, VkDevice device, VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties, Buffer& buffer);
 
-    VkResult GenerateCubeMesh(VkPhysicalDevice pDevice, VkDevice device, Buffer& vertexBuffer
-        , Buffer& indexBuffer, uint32_t& indexCount, imp::Engine& engine);
-
     VkResult SetupGlobalUniforms(imp::Engine& engine, GlobalUniforms& globals);
-    void InitializeSceneData(imp::Engine& engine, SceneData& scene);
+    void InitializeSceneData(imp::Engine& engine, SceneData& scene, SceneLoader::Scene& scenel);
     void UpdateCamera(imp::Window& window, SceneData& scene, GlobalUniformsData& globalsData, double delta);
     void UpdateGlobalDataDescriptorSetByCopy(imp::Engine& engine, const GlobalUniforms& globals, VkCommandBuffer cb);
-    VkResult SetupRenderingDescriptorSet(imp::Engine& engine, RenderingDescriptors& data, Buffer& vertexBuffer
-        , Buffer& indexBuffer, uint64_t meshCount);
+    VkResult SetupRenderingDescriptorSet(imp::Engine& engine, RenderingDescriptors& data, SceneLoader::Scene& scenel);
 
     VkResult CreatePhongPipeline(VkDevice device, VkShaderModule vertModule, VkShaderModule fragModule, PhongPipeline& pipeline);
 

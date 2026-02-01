@@ -91,10 +91,11 @@ int main(int argc, char* argv[])
     VU::SetupGlobalUniforms(engine, globals);
 
     VU::SceneData scene {};
-    VU::InitializeSceneData(engine, scene);
+    VU::InitializeSceneData(engine, scene, scenel);
 
+    uint64_t meshCount = scenel.meshes.size();
     VU::RenderingDescriptors renderingData {};
-    VU::SetupRenderingDescriptorSet(engine, renderingData, scenel.vertexBuffer, scenel.indexBuffer, 1);
+    VU::SetupRenderingDescriptorSet(engine, renderingData, scenel);
 
     VU::PhongPipeline phongPipeline {};
     phongPipeline.pGlobalUniforms = &globals;
@@ -140,7 +141,7 @@ int main(int argc, char* argv[])
 
         float delta = static_cast<float>(frameTimeMs / 1000.0);
         VU::UpdateCamera(engine.GetPlatform().GetWindow(), scene, globals.data, delta);
-        VU::UpdateRenderingDataDescriptorSetByCopy(engine, renderingData, cb, { { glm::mat4(1.0f) } });
+        VU::UpdateRenderingDataDescriptorSetByCopy(engine, renderingData, cb, scene.drawDatas);
         VU::UpdateGlobalDataDescriptorSetByCopy(engine, globals, cb);
 
         std::array<VkClearValue, 2> clearValues {};
@@ -196,8 +197,13 @@ int main(int argc, char* argv[])
         vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, phongPipeline.pipelineLayout, 1, 1, &renderingData.descriptorSet, 0, nullptr);
         vkCmdSetViewport(cb, 0, 1, &viewport);
         vkCmdSetScissor(cb, 0, 1, &rpbi.renderArea);
+
         vkCmdBindIndexBuffer(cb, scenel.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
-        vkCmdDrawIndexed(cb, scenel.indexCount, 1, 0, 0, 0);
+        for (const auto& mesh : scenel.meshes)
+        {
+            vkCmdDrawIndexed(cb, mesh.indexCount, 1, mesh.indexOffset, mesh.vertexOffset, 0);
+        }
+
         vkCmdEndRenderPass(cb);
       
         vkEndCommandBuffer(cb);
