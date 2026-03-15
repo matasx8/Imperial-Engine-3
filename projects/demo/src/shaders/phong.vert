@@ -8,6 +8,8 @@ layout(location = 0) out vec3 outWorldPos;
 layout(location = 1) out vec3 outNormal;
 layout(location = 2) out vec3 outLightVec;
 layout(location = 3) out vec3 outViewVec;
+layout(location = 4) out vec2 outUV;
+layout(location = 5) flat out uint outDrawID;
 
 struct Vertex
 {
@@ -19,6 +21,12 @@ struct Vertex
 struct DrawData
 {
     mat4 Transform;
+    uint materialIdx;
+};
+
+struct MaterialData
+{
+    uint albedoIx;
 };
 
 layout (set = 0, binding = 0) uniform Globals
@@ -33,12 +41,7 @@ layout(set = 1, binding = 0) readonly buffer Vertices
 	Vertex vertices[];
 };
 
-layout(set = 1, binding = 1) readonly buffer Indices
-{
-	uint indices[];
-};
-
-layout(set = 1, binding = 2) readonly buffer DrawDatas
+layout(set = 1, binding = 1) readonly buffer DrawDatas
 {
     DrawData drawData[];
 };
@@ -67,6 +70,8 @@ void main()
     outNormal   = worldNormal;
     outLightVec = lightVec;
     outViewVec  = viewVec;
+    outUV       = vec2(v.tu, v.tv);
+    outDrawID   = ddi;
 
     gl_Position = globals.viewProj * vec4(worldPos, 1.0);
 }

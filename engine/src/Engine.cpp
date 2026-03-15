@@ -67,15 +67,19 @@ namespace imp
 
     static VkResult CreateDescriptorPool(VkDevice device, VkDescriptorPool* pool)
     {
-        VkDescriptorPoolSize poolSize {};
-        poolSize.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        poolSize.descriptorCount = 100; // Arbitrary large number
+        std::array<VkDescriptorPoolSize, 3> poolSizes {};
+        poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        poolSizes[0].descriptorCount = 100;
+        poolSizes[1].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        poolSizes[1].descriptorCount = 100;
+        poolSizes[2].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        poolSizes[2].descriptorCount = 2048;
 
         VkDescriptorPoolCreateInfo dpci {};
         dpci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-        dpci.maxSets = 100; // Arbitrary large number
-        dpci.poolSizeCount = 1;
-        dpci.pPoolSizes = &poolSize;
+        dpci.maxSets = 100;
+        dpci.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
+        dpci.pPoolSizes = poolSizes.data();
 
         VkResult result = vkt.vkCreateDescriptorPool(device, &dpci, nullptr, pool);
         if (result != VK_SUCCESS)
@@ -127,6 +131,7 @@ namespace imp
         result = CreateCommandPool(m_Queue.GetDevice(), queueFamilyIndices.graphicsFamily, &m_GraphicsCommandPool);
         if (result != VK_SUCCESS)
             return result;
+        SetDebugName(m_Queue.GetDevice(), VK_OBJECT_TYPE_COMMAND_POOL, (uint64_t)m_GraphicsCommandPool, "graphics_command_pool");
 
         if (queueFamilyIndices.graphicsFamily == queueFamilyIndices.computeFamily)
         {
@@ -139,6 +144,7 @@ namespace imp
             result = CreateCommandPool(m_Queue.GetDevice(), queueFamilyIndices.computeFamily, &m_ComputeCommandPool);
             if (result != VK_SUCCESS)
                 return result;
+            SetDebugName(m_Queue.GetDevice(), VK_OBJECT_TYPE_COMMAND_POOL, (uint64_t)m_ComputeCommandPool, "compute_command_pool");
         }
 
         result = m_SubmitSyncManager.Initialize(m_Queue.GetDevice(), &m_SafeResourceDestroyer);
@@ -153,7 +159,10 @@ namespace imp
         result = CreateDescriptorPool(m_Queue.GetDevice(), &m_DescriptorPool);
 
         if (result == VK_SUCCESS)
+        {
+            SetDebugName(m_Queue.GetDevice(), VK_OBJECT_TYPE_DESCRIPTOR_POOL, (uint64_t)m_DescriptorPool, "descriptor_pool");
             g_Log("Engine initialized successfully.\n");
+        }
 
         return result;
     }

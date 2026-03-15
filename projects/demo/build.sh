@@ -33,4 +33,7 @@ mkdir -p "$BUILD_DIR"
 cmake -S "$PROJECT_DIR" -B "$BUILD_DIR" \
     -G "Ninja" \
     -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
-    -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+    -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+
+cmake --build "$BUILD_DIR"
+

@@ -1,18 +1,18 @@
 #include "SceneLoader.h"
 #include "Engine.h"
 
-#include "shaders/spv/phong_frag.h"
-#include "shaders/spv/phong_vert.h"
+#include "shaders/spv/pbr_frag.h"
+#include "shaders/spv/pbr_vert.h"
 
 #include <array>
 #include <chrono>
 #include <cstdio>
 #include <string>
 
-struct PushConstants
+struct DrawIndexPushConstant
 {
-    float offsetX;
-    float offsetY;
+    uint32_t drawIndex;
+    uint32_t vertexOffset;
 };
 
 
@@ -36,7 +36,8 @@ int main(int argc, char* argv[])
     platformParams.pWindowInitParams = &windowInitParams;
 
     std::initializer_list<const char*> requiredDeviceExtensions = {
-        VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME
+        VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME,
+        VK_KHR_SHADER_NON_SEMANTIC_INFO_EXTENSION_NAME
     };
 
     imp::EngineCreateParams createParams {};
@@ -55,6 +56,9 @@ int main(int argc, char* argv[])
 
     VkPhysicalDeviceVulkan12Features features12 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES };
     features12.drawIndirectCount = VK_TRUE;
+    features12.descriptorIndexing = VK_TRUE;
+    features12.runtimeDescriptorArray = VK_TRUE;
+    features12.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
     vulkan11Features.pNext = &features12;
 
     VkPhysicalDeviceSynchronization2Features synchronization2Features {};
@@ -70,9 +74,9 @@ int main(int argc, char* argv[])
 
     VkShaderModule vertModule = VK_NULL_HANDLE;
     VkShaderModule fragModule = VK_NULL_HANDLE;
-    if (VU::CreateShaderModule(device, phong_vert, sizeof(phong_vert), vertModule) != VK_SUCCESS)
+    if (VU::CreateShaderModule(device, pbr_vert, sizeof(pbr_vert), vertModule, "pbr_vert") != VK_SUCCESS)
         return 0;
-    if (VU::CreateShaderModule(device, phong_frag, sizeof(phong_frag), fragModule) != VK_SUCCESS)
+    if (VU::CreateShaderModule(device, pbr_frag, sizeof(pbr_frag), fragModule, "pbr_frag") != VK_SUCCESS)
         return 0;
 
     imp::Swapchain& swapchain = engine.GetPlatform().GetWindow().GetSwapchain();
@@ -108,14 +112,16 @@ int main(int argc, char* argv[])
         VK_FORMAT_D32_SFLOAT, VK_IMAGE_TILING_OPTIMAL,
         VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-        phongPipeline.depthImage);
+        phongPipeline.depthImage, "depth");
     VU::CreateImageView(device, phongPipeline.depthImage.image, VK_FORMAT_D32_SFLOAT,
-        VK_IMAGE_ASPECT_DEPTH_BIT, phongPipeline.depthImageView);
+        VK_IMAGE_ASPECT_DEPTH_BIT, phongPipeline.depthImageView, "depth_view");
     for (uint32_t i = 0; i < swapchain.GetSwapchainImageCount(); i++)
     {
+        char fbName[32];
+        snprintf(fbName, sizeof(fbName), "framebuffer_%u", i);
         VkImageView attachment = swapchain.GetSwapchainImageView(i);
         std::array<VkImageView, 2> attachments = { attachment, phongPipeline.depthImageView };
-        VU::CreateFramebuffer(device, phongPipeline.renderPass, attachments.size(), attachments.data(), window.GetWidth(), window.GetHeight(), framebuffers[i]);
+        VU::CreateFramebuffer(device, phongPipeline.renderPass, attachments.size(), attachments.data(), window.GetWidth(), window.GetHeight(), framebuffers[i], fbName);
     }
 
     // Setting up simples form of frame pacing
@@ -141,8 +147,8 @@ int main(int argc, char* argv[])
 
         float delta = static_cast<float>(frameTimeMs / 1000.0);
         VU::UpdateCamera(engine.GetPlatform().GetWindow(), scene, globals.data, delta);
-        VU::UpdateRenderingDataDescriptorSetByCopy(engine, renderingData, cb, scene.drawDatas);
-        VU::UpdateGlobalDataDescriptorSetByCopy(engine, globals, cb);
+        VU::UpdateRenderingDataDescriptorSetByCopy(engine, renderingData, scene.drawDatas);
+        VU::UpdateGlobalDataDescriptorSetByCopy(engine, globals);
 
         std::array<VkClearValue, 2> clearValues {};
         clearValues[0].color.float32[0] = 0.0f;
@@ -199,8 +205,11 @@ int main(int argc, char* argv[])
         vkCmdSetScissor(cb, 0, 1, &rpbi.renderArea);
 
         vkCmdBindIndexBuffer(cb, scenel.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
-        for (const auto& mesh : scenel.meshes)
+        for (uint32_t i = 0; i < static_cast<uint32_t>(scenel.meshes.size()); i++)
         {
+            const auto& mesh = scenel.meshes[i];
+            DrawIndexPushConstant pc { i, static_cast<uint32_t>(mesh.vertexOffset) };
+            vkCmdPushConstants(cb, phongPipeline.pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(pc), &pc);
             vkCmdDrawIndexed(cb, mesh.indexCount, 1, mesh.indexOffset, mesh.vertexOffset, 0);
         }
 

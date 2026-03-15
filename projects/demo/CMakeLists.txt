@@ -46,8 +46,8 @@ function(add_shader TARGET SHADER OUTPUT)
     add_custom_command(
         OUTPUT ${OUTPUT_FILE}
         COMMAND ${Vulkan_GLSLANG_VALIDATOR_EXECUTABLE}
-            --target-env spirv1.3
-            --target-env vulkan1.1
+            --target-env spirv1.5
+            --target-env vulkan1.2
             -V
             --vn ${OUTPUT}
             -o ${OUTPUT_FILE}
@@ -62,5 +62,5 @@ function(add_shader TARGET SHADER OUTPUT)
 endfunction()
 
 
-add_shader(demo src/shaders/phong.vert phong_vert)
-add_shader(demo src/shaders/phong.frag phong_frag)
+add_shader(demo src/shaders/pbr.vert pbr_vert)
+add_shader(demo src/shaders/pbr.frag pbr_frag)
