@@ -1,7 +1,7 @@
 #version 450
 
-// Draw index is passed as a push constant. gl_DrawIDARB only works for indirect
-// draws, and gl_InstanceIndex requires firstInstance support which isn't reliable.
+// Draw index passed as push constant. gl_DrawIDARB only works for indirect
+// draws; gl_InstanceIndex requires firstInstance support which isn't reliable.
 layout(push_constant) uniform PushConstants
 {
     uint drawIndex;
@@ -26,7 +26,7 @@ struct Vertex
     float vx, vy, vz;      // position
     float nx, ny, nz;      // normal
     float tu, tv;           // uv
-    float tx, ty, tz, tw;  // tangent  (w = handedness sign)
+    float tx, ty, tz, tw;  // tangent (w = handedness sign)
 };
 
 struct DrawData
@@ -63,15 +63,14 @@ void main()
     float tangSign = v.tw;
 
     mat4 model     = drawData[ddi].transform;
-    // Normal matrix: inverse-transpose of the 3×3 model submatrix.
-    // Handles non-uniform scale correctly.
+    // Inverse-transpose of the 3x3 model sub-matrix - handles non-uniform scale correctly.
     mat3 normalMat = transpose(inverse(mat3(model)));
 
     vec3 worldPos = vec3(model * vec4(pos, 1.0));
 
     vec3 N = normalize(normalMat * norm);
     vec3 T = normalize(normalMat * tang);
-    T = normalize(T - dot(T, N) * N);    // Gram–Schmidt re-orthogonalise
+    T = normalize(T - dot(T, N) * N);    // Gram-Schmidt re-orthogonalise
     vec3 B = cross(N, T) * tangSign;
 
     outWorldPos = worldPos;

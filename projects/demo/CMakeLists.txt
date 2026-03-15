@@ -62,5 +62,9 @@ function(add_shader TARGET SHADER OUTPUT)
 endfunction()
 
 
-add_shader(demo src/shaders/pbr.vert pbr_vert)
-add_shader(demo src/shaders/pbr.frag pbr_frag)
+add_shader(demo src/shaders/pbr.vert     pbr_vert)
+add_shader(demo src/shaders/pbr.frag     pbr_frag)
+add_shader(demo src/shaders/gbuffer.vert gbuffer_vert)
+add_shader(demo src/shaders/gbuffer.frag gbuffer_frag)
+add_shader(demo src/shaders/lighting.vert lighting_vert)
+add_shader(demo src/shaders/lighting.frag lighting_frag)

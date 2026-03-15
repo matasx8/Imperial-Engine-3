@@ -626,7 +626,7 @@ namespace SceneLoader
         }
         stats.materialCount = static_cast<uint32_t>(scene.materials.size());
 
-        // ── Finalize stats ──────────────────────────────────────────────────────
+        // Finalize stats
         stats.gpuUploadTimeMs = Ms(Clock::now() - gpuStart).count();
         stats.totalTimeMs     = Ms(Clock::now() - totalStart).count();
         stats.totalGpuBytes   = stats.vertexMemBytes + stats.indexMemBytes + stats.textureMemBytes;

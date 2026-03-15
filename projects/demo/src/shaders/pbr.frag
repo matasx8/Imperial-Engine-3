@@ -1,12 +1,12 @@
-#version 450
+﻿#version 450
 
 #extension GL_EXT_nonuniform_qualifier : require
 
 layout(location = 0) out vec4 outColor;
 
-// ──────────────────────────────────────────────────────────
+// ---------------------------------------------------------
 //  Inputs (must match pbr.vert outputs)
-// ──────────────────────────────────────────────────────────
+// ---------------------------------------------------------
 layout(location = 0) in vec3 inWorldPos;
 layout(location = 1) in vec2 inUV;
 layout(location = 2) in vec3 inT;
@@ -14,16 +14,16 @@ layout(location = 3) in vec3 inB;
 layout(location = 4) in vec3 inN;
 layout(location = 5) flat in uint inDrawID;
 
-// ──────────────────────────────────────────────────────────
-//  GPU structs – must match VU::DrawData / SceneLoader::Material (std430)
-// ──────────────────────────────────────────────────────────
+// ---------------------------------------------------------
+//  GPU structs - must match VU::DrawData / SceneLoader::Material (std430)
+// ---------------------------------------------------------
 struct DrawData
 {
     mat4 transform;
     uint materialIdx;
 };
 
-// 48-byte layout – matches SceneLoader::Material + its static_assert
+// 48-byte layout - matches SceneLoader::Material + its static_assert
 struct MaterialData
 {
     vec4  baseColorFactor;
@@ -37,12 +37,13 @@ struct MaterialData
 
 const uint kInvalidId = 0xFFFFFFFFu;
 
-// ──────────────────────────────────────────────────────────
+// ---------------------------------------------------------
 //  Descriptor sets
-// ──────────────────────────────────────────────────────────
+// ---------------------------------------------------------
 layout(set = 0, binding = 0) uniform Globals
 {
     mat4 viewProj;
+    mat4 invViewProj;  // not used here, declared to match GlobalUniformsData layout
     vec3 cameraPos;
     vec3 lightDir;
 } globals;
@@ -51,9 +52,9 @@ layout(set = 1, binding = 1) readonly buffer DrawDatas    { DrawData     drawDat
 layout(set = 1, binding = 2) readonly buffer MaterialDatas { MaterialData materialData[]; };
 layout(set = 1, binding = 3) uniform sampler2D samplerData[];
 
-// ──────────────────────────────────────────────────────────
+// ---------------------------------------------------------
 //  Cook-Torrance BRDF helpers
-// ──────────────────────────────────────────────────────────
+// ---------------------------------------------------------
 const float PI = 3.14159265359;
 
 // GGX / Trowbridge-Reitz normal distribution function
@@ -65,7 +66,7 @@ float D_GGX(float NdotH, float roughness)
     return a2 / (PI * d * d);
 }
 
-// Smith–GGX geometry term (combines masking G1 for V and L)
+// Smith-GGX geometry term (combines masking G1 for V and L)
 float G_SmithGGX(float NdotV, float NdotL, float roughness)
 {
     // Schlick-GGX remapping for direct lights: k = (r+1)² / 8
@@ -82,25 +83,24 @@ vec3 F_Schlick(float cosTheta, vec3 F0)
     return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
 }
 
-// ──────────────────────────────────────────────────────────
-//  ACES filmic tone mapping
-//  Fitted curve by Krzysztof Narkowicz (2016)
-// ──────────────────────────────────────────────────────────
+// ---------------------------------------------------------
+//  ACES filmic tone mapping - Narkowicz 2016
+// ---------------------------------------------------------
 vec3 ACES(vec3 x)
 {
     const float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
     return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
 }
 
-// ──────────────────────────────────────────────────────────
+// ---------------------------------------------------------
 //  Main
-// ──────────────────────────────────────────────────────────
+// ---------------------------------------------------------
 void main()
 {
     uint         matID = drawData[inDrawID].materialIdx;
     MaterialData mat   = materialData[matID];
 
-    // ── Base colour ───────────────────────────────────────
+    // - Base colour -
     vec4 baseColor = mat.baseColorFactor;
     if (mat.albedoIdx != kInvalidId)
         baseColor *= texture(samplerData[nonuniformEXT(mat.albedoIdx)], inUV);
@@ -109,7 +109,7 @@ void main()
     if (baseColor.a < 0.5)
         discard;
 
-    // ── Normal ────────────────────────────────────────────
+    // - Normal -
     vec3 N = normalize(inN);
     if (mat.normalIdx != kInvalidId)
     {
@@ -119,7 +119,7 @@ void main()
         N                  = normalize(TBN * tangentNormal);
     }
 
-    // ── Metallic / Roughness ──────────────────────────────
+    // - Metallic / Roughness -
     // glTF packs: G = roughness, B = metallic
     float metallic  = mat.metallicFactor;
     float roughness = mat.roughnessFactor;
@@ -132,7 +132,7 @@ void main()
     roughness = clamp(roughness, 0.04, 1.0);
     metallic  = clamp(metallic,  0.0,  1.0);
 
-    // ── Cook-Torrance BRDF ────────────────────────────────
+    // - Cook-Torrance BRDF -
     vec3 albedo = baseColor.rgb;
 
     // F0: base reflectance at normal incidence.
@@ -168,7 +168,7 @@ void main()
 
     vec3 color = ambient + Lo;
 
-    // ── Tone mapping + gamma correction ───────────────────
+    // - Tone mapping + gamma correction -
     color = ACES(color);
     color = pow(color, vec3(1.0 / 2.2));
 

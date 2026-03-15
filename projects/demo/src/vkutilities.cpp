@@ -274,9 +274,10 @@ namespace VU
         const glm::vec3 pos = glm::vec3(scene.cameraTransform[3]);
         glm::mat4 view = glm::lookAtRH(pos, pos + newFront, newUp);
 
-        globalsData.cameraPos = pos;
-        globalsData.lightDir  = scene.lightDir;
-        globalsData.viewProj  = scene.projection * view;
+        globalsData.cameraPos  = pos;
+        globalsData.lightDir   = scene.lightDir;
+        globalsData.viewProj   = scene.projection * view;
+        globalsData.invViewProj = glm::inverse(globalsData.viewProj);
     }
 
     void UpdateGlobalDataDescriptorSetByCopy(imp::Engine& engine, const GlobalUniforms& globals)
@@ -411,6 +412,429 @@ namespace VU
         return VK_SUCCESS;
     }
         
+    // Stage 1: G-Buffer image allocation
+    //
+    // Creates the three device-local images that make up the G-Buffer.
+    // The lighting output (swapchain image) is NOT allocated here.
+    VkResult CreateGBuffer(VkPhysicalDevice pDevice, VkDevice device, uint32_t width, uint32_t height, GBuffer& gbuffer)
+    {
+        // Attachment 0: albedo (RGB) + metallic (A)
+        VkResult result = CreateImage(pDevice, device, width, height,
+            GBuffer::kAlbedoMetallicFormat,
+            VK_IMAGE_TILING_OPTIMAL,
+            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+            gbuffer.albedoMetallic, "gbuf_albedo_metallic");
+        if (result != VK_SUCCESS) return result;
+
+        result = CreateImageView(device, gbuffer.albedoMetallic.image,
+            GBuffer::kAlbedoMetallicFormat, VK_IMAGE_ASPECT_COLOR_BIT,
+            gbuffer.albedoMetallic.imageView, "gbuf_albedo_metallic_view");
+        if (result != VK_SUCCESS) return result;
+
+        // Attachment 1: world normal (XYZ) + roughness (W)
+        result = CreateImage(pDevice, device, width, height,
+            GBuffer::kNormalRoughnessFormat,
+            VK_IMAGE_TILING_OPTIMAL,
+            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+            gbuffer.normalRoughness, "gbuf_normal_roughness");
+        if (result != VK_SUCCESS) return result;
+
+        result = CreateImageView(device, gbuffer.normalRoughness.image,
+            GBuffer::kNormalRoughnessFormat, VK_IMAGE_ASPECT_COLOR_BIT,
+            gbuffer.normalRoughness.imageView, "gbuf_normal_roughness_view");
+        if (result != VK_SUCCESS) return result;
+
+        // Attachment 2: depth (also sampled in lighting pass for world pos reconstruction)
+        result = CreateImage(pDevice, device, width, height,
+            GBuffer::kDepthFormat,
+            VK_IMAGE_TILING_OPTIMAL,
+            VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+            gbuffer.depth, "gbuf_depth");
+        if (result != VK_SUCCESS) return result;
+
+        result = CreateImageView(device, gbuffer.depth.image,
+            GBuffer::kDepthFormat, VK_IMAGE_ASPECT_DEPTH_BIT,
+            gbuffer.depth.imageView, "gbuf_depth_view");
+        return result;
+    }
+
+    VkResult CreateGBufferPipeline(imp::Engine& engine, VkShaderModule vertModule, VkShaderModule fragModule,
+        GBufferPipeline& pipeline, uint32_t width, uint32_t height)
+    {
+        VkDevice         device  = engine.GetWorkQueue().GetDevice();
+        VkPhysicalDevice pDevice = engine.GetPhysicalDevice();
+
+        // Allocate G-Buffer images
+        VkResult result = CreateGBuffer(pDevice, device, width, height, pipeline.gbuffer);
+        if (result != VK_SUCCESS) return result;
+
+        // Render pass: 2 color outputs + depth.
+        // All start UNDEFINED (cleared on load) and end SHADER_READ_ONLY_OPTIMAL
+        // so the lighting pass can sample them without an explicit barrier.
+        std::array<VkAttachmentDescription, 3> attachments {};
+        attachments[0].format         = GBuffer::kAlbedoMetallicFormat;
+        attachments[0].samples        = VK_SAMPLE_COUNT_1_BIT;
+        attachments[0].loadOp         = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        attachments[0].storeOp        = VK_ATTACHMENT_STORE_OP_STORE;
+        attachments[0].initialLayout  = VK_IMAGE_LAYOUT_UNDEFINED;
+        attachments[0].finalLayout    = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        attachments[1].format         = GBuffer::kNormalRoughnessFormat;
+        attachments[1].samples        = VK_SAMPLE_COUNT_1_BIT;
+        attachments[1].loadOp         = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        attachments[1].storeOp        = VK_ATTACHMENT_STORE_OP_STORE;
+        attachments[1].initialLayout  = VK_IMAGE_LAYOUT_UNDEFINED;
+        attachments[1].finalLayout    = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        attachments[2].format         = GBuffer::kDepthFormat;
+        attachments[2].samples        = VK_SAMPLE_COUNT_1_BIT;
+        attachments[2].loadOp         = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        attachments[2].storeOp        = VK_ATTACHMENT_STORE_OP_STORE;
+        attachments[2].stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        attachments[2].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        attachments[2].initialLayout  = VK_IMAGE_LAYOUT_UNDEFINED;
+        attachments[2].finalLayout    = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+        std::array<VkAttachmentReference, 2> colorRefs {};
+        colorRefs[0] = { 0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL };
+        colorRefs[1] = { 1, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL };
+        VkAttachmentReference depthRef { 2, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL };
+
+        VkSubpassDescription subpass {};
+        subpass.pipelineBindPoint       = VK_PIPELINE_BIND_POINT_GRAPHICS;
+        subpass.colorAttachmentCount    = static_cast<uint32_t>(colorRefs.size());
+        subpass.pColorAttachments       = colorRefs.data();
+        subpass.pDepthStencilAttachment = &depthRef;
+
+        // Ensure G-Buffer writes are visible to the lighting-pass fragment reads.
+        VkSubpassDependency dep {};
+        dep.srcSubpass    = 0;
+        dep.dstSubpass    = VK_SUBPASS_EXTERNAL;
+        dep.srcStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+        dep.dstStageMask  = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        dep.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        dep.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+        VkRenderPassCreateInfo rpci {};
+        rpci.sType           = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+        rpci.attachmentCount = static_cast<uint32_t>(attachments.size());
+        rpci.pAttachments    = attachments.data();
+        rpci.subpassCount    = 1;
+        rpci.pSubpasses      = &subpass;
+        rpci.dependencyCount = 1;
+        rpci.pDependencies   = &dep;
+
+        result = vkCreateRenderPass(device, &rpci, nullptr, &pipeline.renderPass);
+        if (result != VK_SUCCESS) return result;
+        SetDebugName(device, VK_OBJECT_TYPE_RENDER_PASS, (uint64_t)pipeline.renderPass, "gbuffer_render_pass");
+
+        // Framebuffer (swapchain-independent - uses only G-Buffer images)
+        std::array<VkImageView, 3> fbViews = {
+            pipeline.gbuffer.albedoMetallic.imageView,
+            pipeline.gbuffer.normalRoughness.imageView,
+            pipeline.gbuffer.depth.imageView
+        };
+        result = CreateFramebuffer(device, pipeline.renderPass,
+            static_cast<uint32_t>(fbViews.size()), fbViews.data(),
+            width, height, pipeline.framebuffer, "gbuffer_framebuffer");
+        if (result != VK_SUCCESS) return result;
+
+        // Pipeline layout: set 0 = globals UBO, set 1 = rendering descriptors, push constant = drawIndex + vertexOffset
+        VkPushConstantRange pushRange {};
+        pushRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+        pushRange.size       = sizeof(uint32_t) * 2;
+
+        std::array<VkDescriptorSetLayout, 2> setLayouts = {
+            pipeline.pGlobalUniforms->descriptorSetLayout,
+            pipeline.pRenderingDescriptors->descriptorSetLayout
+        };
+
+        VkPipelineLayoutCreateInfo plci {};
+        plci.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        plci.setLayoutCount         = static_cast<uint32_t>(setLayouts.size());
+        plci.pSetLayouts            = setLayouts.data();
+        plci.pushConstantRangeCount = 1;
+        plci.pPushConstantRanges    = &pushRange;
+
+        result = vkCreatePipelineLayout(device, &plci, nullptr, &pipeline.pipelineLayout);
+        if (result != VK_SUCCESS) return result;
+        SetDebugName(device, VK_OBJECT_TYPE_PIPELINE_LAYOUT, (uint64_t)pipeline.pipelineLayout, "gbuffer_layout");
+
+        VkPipelineShaderStageCreateInfo stages[2] {};
+        stages[0].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[0].stage  = VK_SHADER_STAGE_VERTEX_BIT;
+        stages[0].module = vertModule;
+        stages[0].pName  = "main";
+        stages[1].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[1].stage  = VK_SHADER_STAGE_FRAGMENT_BIT;
+        stages[1].module = fragModule;
+        stages[1].pName  = "main";
+
+        VkPipelineVertexInputStateCreateInfo pvisi {};
+        pvisi.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+
+        VkPipelineInputAssemblyStateCreateInfo piasi {};
+        piasi.sType    = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+        piasi.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+        VkPipelineViewportStateCreateInfo pvsi {};
+        pvsi.sType         = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+        pvsi.viewportCount = 1;
+        pvsi.scissorCount  = 1;
+
+        VkPipelineRasterizationStateCreateInfo prsi {};
+        prsi.sType       = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+        prsi.polygonMode = VK_POLYGON_MODE_FILL;
+        prsi.cullMode    = VK_CULL_MODE_BACK_BIT;
+        prsi.frontFace   = VK_FRONT_FACE_CLOCKWISE;
+        prsi.lineWidth   = 1.0f;
+
+        VkPipelineMultisampleStateCreateInfo pmsi {};
+        pmsi.sType                = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+        pmsi.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+        // One blend state per color output (albedoMetallic + normalRoughness)
+        VkPipelineColorBlendAttachmentState blendAtt {};
+        blendAtt.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                                   VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+        std::array<VkPipelineColorBlendAttachmentState, 2> blendAtts = { blendAtt, blendAtt };
+
+        VkPipelineColorBlendStateCreateInfo pcbsci {};
+        pcbsci.sType           = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+        pcbsci.attachmentCount = static_cast<uint32_t>(blendAtts.size());
+        pcbsci.pAttachments    = blendAtts.data();
+
+        VkPipelineDepthStencilStateCreateInfo pdsci {};
+        pdsci.sType            = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+        pdsci.depthTestEnable  = VK_TRUE;
+        pdsci.depthWriteEnable = VK_TRUE;
+        pdsci.depthCompareOp   = VK_COMPARE_OP_LESS;
+
+        std::array<VkDynamicState, 2> dynStates = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+        VkPipelineDynamicStateCreateInfo pdsi {};
+        pdsi.sType             = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+        pdsi.dynamicStateCount = static_cast<uint32_t>(dynStates.size());
+        pdsi.pDynamicStates    = dynStates.data();
+
+        VkGraphicsPipelineCreateInfo gpci {};
+        gpci.sType               = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+        gpci.stageCount          = 2;
+        gpci.pStages             = stages;
+        gpci.pVertexInputState   = &pvisi;
+        gpci.pInputAssemblyState = &piasi;
+        gpci.pViewportState      = &pvsi;
+        gpci.pRasterizationState = &prsi;
+        gpci.pMultisampleState   = &pmsi;
+        gpci.pColorBlendState    = &pcbsci;
+        gpci.pDepthStencilState  = &pdsci;
+        gpci.pDynamicState       = &pdsi;
+        gpci.layout              = pipeline.pipelineLayout;
+        gpci.renderPass          = pipeline.renderPass;
+
+        result = vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &gpci, nullptr, &pipeline.pipeline);
+        if (result == VK_SUCCESS)
+            SetDebugName(device, VK_OBJECT_TYPE_PIPELINE, (uint64_t)pipeline.pipeline, "gbuffer_pipeline");
+        return result;
+    }
+
+    VkResult CreateLightingPipeline(imp::Engine& engine, VkShaderModule vertModule, VkShaderModule fragModule,
+        LightingPipeline& pipeline, const GBuffer& gbuffer, uint32_t width, uint32_t height)
+    {
+        VkDevice        device    = engine.GetWorkQueue().GetDevice();
+        imp::Swapchain& swapchain = engine.GetPlatform().GetWindow().GetSwapchain();
+
+        // Nearest/clamp sampler - G-Buffer texels map 1:1 to screen pixels
+        VkSamplerCreateInfo sci {};
+        sci.sType        = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        sci.magFilter    = VK_FILTER_NEAREST;
+        sci.minFilter    = VK_FILTER_NEAREST;
+        sci.addressModeU = sci.addressModeV = sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        sci.mipmapMode   = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        VkResult result = vkCreateSampler(device, &sci, nullptr, &pipeline.gbufferSampler);
+        if (result != VK_SUCCESS) return result;
+        SetDebugName(device, VK_OBJECT_TYPE_SAMPLER, (uint64_t)pipeline.gbufferSampler, "gbuffer_sampler");
+
+        // Descriptor set layout: bindings 0/1/2 = albedoMetallic / normalRoughness / depth
+        std::array<VkDescriptorSetLayoutBinding, 3> bindings {};
+        bindings[0] = { 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr };
+        bindings[1] = { 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr };
+        bindings[2] = { 2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr };
+
+        VkDescriptorSetLayoutCreateInfo dslci {};
+        dslci.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        dslci.bindingCount = static_cast<uint32_t>(bindings.size());
+        dslci.pBindings    = bindings.data();
+        result = vkCreateDescriptorSetLayout(device, &dslci, nullptr, &pipeline.descriptorSetLayout);
+        if (result != VK_SUCCESS) return result;
+        SetDebugName(device, VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT, (uint64_t)pipeline.descriptorSetLayout, "lighting_dsl");
+
+        VkDescriptorSetAllocateInfo dsai {};
+        dsai.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        dsai.descriptorPool     = engine.GetDescriptorPool();
+        dsai.descriptorSetCount = 1;
+        dsai.pSetLayouts        = &pipeline.descriptorSetLayout;
+        result = vkAllocateDescriptorSets(device, &dsai, &pipeline.descriptorSet);
+        if (result != VK_SUCCESS) return result;
+        SetDebugName(device, VK_OBJECT_TYPE_DESCRIPTOR_SET, (uint64_t)pipeline.descriptorSet, "lighting_ds");
+
+        // Write G-Buffer image views into the descriptor set
+        std::array<VkDescriptorImageInfo, 3> ii {};
+        ii[0] = { pipeline.gbufferSampler, gbuffer.albedoMetallic.imageView,  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+        ii[1] = { pipeline.gbufferSampler, gbuffer.normalRoughness.imageView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+        ii[2] = { pipeline.gbufferSampler, gbuffer.depth.imageView,           VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+
+        std::array<VkWriteDescriptorSet, 3> writes {};
+        for (uint32_t i = 0; i < 3; i++)
+        {
+            writes[i].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[i].dstSet          = pipeline.descriptorSet;
+            writes[i].dstBinding      = i;
+            writes[i].descriptorCount = 1;
+            writes[i].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            writes[i].pImageInfo      = &ii[i];
+        }
+        vkUpdateDescriptorSets(device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+
+        // Render pass: single color attachment (swapchain), no depth
+        VkAttachmentDescription colorAtt {};
+        colorAtt.format        = swapchain.GetSurfaceFormat();
+        colorAtt.samples       = VK_SAMPLE_COUNT_1_BIT;
+        colorAtt.loadOp        = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        colorAtt.storeOp       = VK_ATTACHMENT_STORE_OP_STORE;
+        colorAtt.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        colorAtt.finalLayout   = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+
+        VkAttachmentReference colorRef { 0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL };
+
+        VkSubpassDescription subpass {};
+        subpass.pipelineBindPoint    = VK_PIPELINE_BIND_POINT_GRAPHICS;
+        subpass.colorAttachmentCount = 1;
+        subpass.pColorAttachments    = &colorRef;
+
+        // Wait for the swapchain image acquire before writing to it.
+        VkSubpassDependency dep {};
+        dep.srcSubpass    = VK_SUBPASS_EXTERNAL;
+        dep.dstSubpass    = 0;
+        dep.srcStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        dep.dstStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        dep.srcAccessMask = 0;
+        dep.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+
+        VkRenderPassCreateInfo rpci {};
+        rpci.sType           = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+        rpci.attachmentCount = 1;
+        rpci.pAttachments    = &colorAtt;
+        rpci.subpassCount    = 1;
+        rpci.pSubpasses      = &subpass;
+        rpci.dependencyCount = 1;
+        rpci.pDependencies   = &dep;
+
+        result = vkCreateRenderPass(device, &rpci, nullptr, &pipeline.renderPass);
+        if (result != VK_SUCCESS) return result;
+        SetDebugName(device, VK_OBJECT_TYPE_RENDER_PASS, (uint64_t)pipeline.renderPass, "lighting_render_pass");
+
+        // One framebuffer per swapchain image
+        uint32_t imageCount = swapchain.GetSwapchainImageCount();
+        pipeline.framebuffers.resize(imageCount);
+        for (uint32_t i = 0; i < imageCount; i++)
+        {
+            VkImageView view = swapchain.GetSwapchainImageView(i);
+            char name[32];
+            snprintf(name, sizeof(name), "lighting_fb_%u", i);
+            result = CreateFramebuffer(device, pipeline.renderPass, 1, &view, width, height, pipeline.framebuffers[i], name);
+            if (result != VK_SUCCESS) return result;
+        }
+
+        // Pipeline layout: set 0 = globals UBO, set 1 = G-Buffer samplers (no push constants)
+        std::array<VkDescriptorSetLayout, 2> setLayouts = {
+            pipeline.pGlobalUniforms->descriptorSetLayout,
+            pipeline.descriptorSetLayout
+        };
+
+        VkPipelineLayoutCreateInfo plci {};
+        plci.sType          = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        plci.setLayoutCount = static_cast<uint32_t>(setLayouts.size());
+        plci.pSetLayouts    = setLayouts.data();
+        result = vkCreatePipelineLayout(device, &plci, nullptr, &pipeline.pipelineLayout);
+        if (result != VK_SUCCESS) return result;
+        SetDebugName(device, VK_OBJECT_TYPE_PIPELINE_LAYOUT, (uint64_t)pipeline.pipelineLayout, "lighting_layout");
+
+        VkPipelineShaderStageCreateInfo stages[2] {};
+        stages[0].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[0].stage  = VK_SHADER_STAGE_VERTEX_BIT;
+        stages[0].module = vertModule;
+        stages[0].pName  = "main";
+        stages[1].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[1].stage  = VK_SHADER_STAGE_FRAGMENT_BIT;
+        stages[1].module = fragModule;
+        stages[1].pName  = "main";
+
+        // No vertex input - fullscreen triangle is generated in the vertex shader
+        VkPipelineVertexInputStateCreateInfo pvisi {};
+        pvisi.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+
+        VkPipelineInputAssemblyStateCreateInfo piasi {};
+        piasi.sType    = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+        piasi.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+        VkPipelineViewportStateCreateInfo pvsi {};
+        pvsi.sType         = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+        pvsi.viewportCount = 1;
+        pvsi.scissorCount  = 1;
+
+        VkPipelineRasterizationStateCreateInfo prsi {};
+        prsi.sType       = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+        prsi.polygonMode = VK_POLYGON_MODE_FILL;
+        prsi.cullMode    = VK_CULL_MODE_NONE;  // fullscreen pass - no backface culling
+        prsi.frontFace   = VK_FRONT_FACE_CLOCKWISE;
+        prsi.lineWidth   = 1.0f;
+
+        VkPipelineMultisampleStateCreateInfo pmsi {};
+        pmsi.sType                = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+        pmsi.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+        VkPipelineColorBlendAttachmentState blendAtt {};
+        blendAtt.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                                   VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+
+        VkPipelineColorBlendStateCreateInfo pcbsci {};
+        pcbsci.sType           = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+        pcbsci.attachmentCount = 1;
+        pcbsci.pAttachments    = &blendAtt;
+
+        // No depth test or write for the fullscreen lighting pass
+        VkPipelineDepthStencilStateCreateInfo pdsci {};
+        pdsci.sType           = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+        pdsci.depthTestEnable = VK_FALSE;
+
+        std::array<VkDynamicState, 2> dynStates = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+        VkPipelineDynamicStateCreateInfo pdsi {};
+        pdsi.sType             = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+        pdsi.dynamicStateCount = static_cast<uint32_t>(dynStates.size());
+        pdsi.pDynamicStates    = dynStates.data();
+
+        VkGraphicsPipelineCreateInfo gpci {};
+        gpci.sType               = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+        gpci.stageCount          = 2;
+        gpci.pStages             = stages;
+        gpci.pVertexInputState   = &pvisi;
+        gpci.pInputAssemblyState = &piasi;
+        gpci.pViewportState      = &pvsi;
+        gpci.pRasterizationState = &prsi;
+        gpci.pMultisampleState   = &pmsi;
+        gpci.pColorBlendState    = &pcbsci;
+        gpci.pDepthStencilState  = &pdsci;
+        gpci.pDynamicState       = &pdsi;
+        gpci.layout              = pipeline.pipelineLayout;
+        gpci.renderPass          = pipeline.renderPass;
+
+        result = vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &gpci, nullptr, &pipeline.pipeline);
+        if (result == VK_SUCCESS)
+            SetDebugName(device, VK_OBJECT_TYPE_PIPELINE, (uint64_t)pipeline.pipeline, "lighting_pipeline");
+        return result;
+    }
+
     VkResult CreatePhongPipeline(VkDevice device, VkShaderModule vertModule, VkShaderModule fragModule
         , PhongPipeline& pipeline)
     {

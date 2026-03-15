@@ -24,6 +24,23 @@ namespace VU
         vkSetDebugUtilsObjectNameEXT(device, &nameInfo);
     }
 
+    inline void CmdBeginLabel(VkCommandBuffer cb, const char* name, float r = 0.5f, float g = 0.5f, float b = 0.5f)
+    {
+        VkDebugUtilsLabelEXT label {};
+        label.sType      = VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT;
+        label.pLabelName = name;
+        label.color[0]   = r;
+        label.color[1]   = g;
+        label.color[2]   = b;
+        label.color[3]   = 1.0f;
+        vkCmdBeginDebugUtilsLabelEXT(cb, &label);
+    }
+
+    inline void CmdEndLabel(VkCommandBuffer cb)
+    {
+        vkCmdEndDebugUtilsLabelEXT(cb);
+    }
+
     struct Image
     {
         VkImage image = VK_NULL_HANDLE;
@@ -49,6 +66,7 @@ namespace VU
     struct GlobalUniformsData
     {
         glm::mat4 viewProj;
+        glm::mat4 invViewProj;   // used in lighting pass to reconstruct world pos from depth
         glm::vec3 cameraPos;
         float padding1;
         glm::vec3 lightDir;  // normalized, points from surface toward light
@@ -100,6 +118,56 @@ namespace VU
         RenderingDescriptors* pRenderingDescriptors;
     };
 
+    // Deferred G-Buffer
+    //
+    //  Attachment 0 - albedoMetallic   R8G8B8A8_UNORM    (RGB = albedo, A = metallic)
+    //  Attachment 1 - normalRoughness  R16G16B16A16_SFLOAT (XYZ = world normal, W = roughness)
+    //  Attachment 2 - depth            D32_SFLOAT          (world pos reconstructed via invViewProj)
+    //  Lighting output - swapchain image, no separate allocation
+    // -------------------------------------------------------------------------
+    struct GBuffer
+    {
+        static constexpr VkFormat kAlbedoMetallicFormat  = VK_FORMAT_R8G8B8A8_UNORM;
+        static constexpr VkFormat kNormalRoughnessFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
+        static constexpr VkFormat kDepthFormat           = VK_FORMAT_D32_SFLOAT;
+
+        Image albedoMetallic;   // binding 0 in the lighting pass
+        Image normalRoughness;  // binding 1 in the lighting pass
+        Image depth;            // binding 2 in the lighting pass
+    };
+
+    // Geometry pass: writes all meshes into the G-Buffer.
+    // One render pass, one framebuffer (swapchain-independent).
+    struct GBufferPipeline
+    {
+        VkPipeline       pipeline       = VK_NULL_HANDLE;
+        VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
+        VkRenderPass     renderPass     = VK_NULL_HANDLE;
+        VkFramebuffer    framebuffer    = VK_NULL_HANDLE;
+
+        GBuffer gbuffer;
+
+        GlobalUniforms*      pGlobalUniforms       = nullptr;
+        RenderingDescriptors* pRenderingDescriptors = nullptr;
+    };
+
+    // Lighting pass: full-screen triangle, reads G-Buffer, writes to swapchain.
+    // One render pass, one framebuffer per swapchain image.
+    struct LightingPipeline
+    {
+        VkPipeline       pipeline       = VK_NULL_HANDLE;
+        VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
+        VkRenderPass     renderPass     = VK_NULL_HANDLE;
+        std::vector<VkFramebuffer> framebuffers;  // [swapchain image index]
+
+        // Descriptor set: G-Buffer attachments as combined image samplers.
+        VkDescriptorSetLayout descriptorSetLayout = VK_NULL_HANDLE;
+        VkDescriptorSet       descriptorSet       = VK_NULL_HANDLE;
+        VkSampler             gbufferSampler      = VK_NULL_HANDLE; // nearest, clamp — GBuffer is 1:1 pixels
+
+        GlobalUniforms* pGlobalUniforms = nullptr;
+    };
+
     VkResult CreateShaderModule(VkDevice device, const uint32_t* source, size_t codeSize, VkShaderModule& shader, const char* debugName = nullptr);
 
     VkResult CreateImage(VkPhysicalDevice pDevice, VkDevice device, uint32_t width, uint32_t height, VkFormat format, VkImageTiling tiling, VkImageUsageFlags usage, VkMemoryPropertyFlags properties, Image& image, const char* debugName = nullptr, uint32_t mipLevels = 1);
@@ -115,6 +183,15 @@ namespace VU
     void UpdateGlobalDataDescriptorSetByCopy(imp::Engine& engine, const GlobalUniforms& globals);
     VkResult SetupRenderingDescriptorSet(imp::Engine& engine, RenderingDescriptors& data, SceneLoader::Scene& scenel);
 
+    // Stage 1: G-Buffer image allocation
+    // Allocates the three G-Buffer images at the given resolution. Call once at startup; call again on resize.
+    VkResult CreateGBuffer(VkPhysicalDevice pDevice, VkDevice device, uint32_t width, uint32_t height, GBuffer& gbuffer);
+
+    // Stage 3: pipeline creation (also allocates G-Buffer images and all framebuffers)
+    VkResult CreateGBufferPipeline(imp::Engine& engine, VkShaderModule vertModule, VkShaderModule fragModule, GBufferPipeline& pipeline, uint32_t width, uint32_t height);
+    VkResult CreateLightingPipeline(imp::Engine& engine, VkShaderModule vertModule, VkShaderModule fragModule, LightingPipeline& pipeline, const GBuffer& gbuffer, uint32_t width, uint32_t height);
+
+    // Legacy (replaced in Stage 3)
     VkResult CreatePhongPipeline(VkDevice device, VkShaderModule vertModule, VkShaderModule fragModule, PhongPipeline& pipeline);
 
     void UpdateRenderingDataDescriptorSetByCopy(imp::Engine& engine, const RenderingDescriptors& renderingData, const std::vector<DrawData>& drawData);
