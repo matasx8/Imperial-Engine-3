@@ -130,6 +130,7 @@ namespace SceneLoader
         
         std::vector<Entity> entities;
         std::vector<Mesh> meshes;
+        std::vector<VU::BoundingSphere> boundingSpheres;  // parallel to meshes[], local space
         std::vector<glm::mat4x4> transforms;
         std::vector<VkSampler> samplers;
         std::vector<Image> images;

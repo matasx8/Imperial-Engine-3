@@ -19,6 +19,7 @@ namespace imp
         uint32_t height = 800;
         uint64_t windowHandle = 0;
         WindowType type = WindowType::kPlatformWindow;
+        bool fullscreen = false;
     };
 
     class Window

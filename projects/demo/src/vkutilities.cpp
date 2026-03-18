@@ -10,6 +10,7 @@
 #include <array>
 #include <unordered_map>
 #include <cstdio>
+#include <string>
 
 namespace VU
 {
@@ -178,55 +179,70 @@ namespace VU
         return VK_SUCCESS;
     }
 
-     VkResult SetupGlobalUniforms(imp::Engine& engine, GlobalUniforms& globals)
+     VkResult SetupGlobalUniforms(imp::Engine& engine, GlobalUniforms& globals, uint32_t framesInFlight)
      {
         VkDevice device = engine.GetWorkQueue().GetDevice();
 
-        VkResult result = CreateBuffer(engine.GetPhysicalDevice(), device,
-                                        sizeof(GlobalUniformsData),
-                                        VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-                                        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                                        globals.ubo, "globals_ubo");
+        // Allocate one HOST_VISIBLE UBO per frame-in-flight so the CPU can overwrite the
+        // next frame's data while the GPU is still reading the previous frame's buffer.
+        globals.ubos.resize(framesInFlight);
+        globals.descriptorSets.resize(framesInFlight);
+        for (uint32_t i = 0; i < framesInFlight; ++i)
+        {
+            const std::string name = "globals_ubo_" + std::to_string(i);
+            VkResult result = CreateBuffer(engine.GetPhysicalDevice(), device,
+                sizeof(GlobalUniformsData),
+                VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                globals.ubos[i], name.c_str());
+            if (result != VK_SUCCESS) return result;
+        }
 
+        // One shared DSL; each DS points to its own UBO slot.
         VkDescriptorSetLayoutBinding binding {};
         binding.binding = 0;
         binding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         binding.descriptorCount = 1;
-        binding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+        binding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT;
 
         VkDescriptorSetLayoutCreateInfo dslci {};
         dslci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
         dslci.bindingCount = 1;
         dslci.pBindings = &binding;
 
-        result = vkCreateDescriptorSetLayout(device, &dslci, nullptr, &globals.descriptorSetLayout);
-
-        if (result != VK_SUCCESS)
-            return result;
+        VkResult result = vkCreateDescriptorSetLayout(device, &dslci, nullptr, &globals.descriptorSetLayout);
+        if (result != VK_SUCCESS) return result;
         SetDebugName(device, VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT, (uint64_t)globals.descriptorSetLayout, "globals_dsl");
 
+        // Allocate all descriptor sets in a single call
+        std::vector<VkDescriptorSetLayout> layouts(framesInFlight, globals.descriptorSetLayout);
         VkDescriptorSetAllocateInfo dsai {};
         dsai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
         dsai.descriptorPool = engine.GetDescriptorPool();
-        dsai.descriptorSetCount = 1;
-        dsai.pSetLayouts = &globals.descriptorSetLayout;
+        dsai.descriptorSetCount = framesInFlight;
+        dsai.pSetLayouts = layouts.data();
+        result = vkAllocateDescriptorSets(device, &dsai, globals.descriptorSets.data());
+        if (result != VK_SUCCESS) return result;
 
-        vkAllocateDescriptorSets(device, &dsai, &globals.descriptorSet);
-        SetDebugName(device, VK_OBJECT_TYPE_DESCRIPTOR_SET, (uint64_t)globals.descriptorSet, "globals_ds");
+        for (uint32_t i = 0; i < framesInFlight; ++i)
+        {
+            const std::string dsName = "globals_ds_" + std::to_string(i);
+            SetDebugName(device, VK_OBJECT_TYPE_DESCRIPTOR_SET, (uint64_t)globals.descriptorSets[i], dsName.c_str());
 
-        VkDescriptorBufferInfo bi {};
-        bi.buffer = globals.ubo.buffer;
-        bi.range = VK_WHOLE_SIZE;
+            VkDescriptorBufferInfo bi {};
+            bi.buffer = globals.ubos[i].buffer;
+            bi.range  = VK_WHOLE_SIZE;
 
-        VkWriteDescriptorSet write {};
-        write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        write.dstSet = globals.descriptorSet;
-        write.dstBinding = 0;
-        write.descriptorCount = 1;
-        write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        write.pBufferInfo = &bi;
+            VkWriteDescriptorSet write {};
+            write.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            write.dstSet          = globals.descriptorSets[i];
+            write.dstBinding      = 0;
+            write.descriptorCount = 1;
+            write.descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            write.pBufferInfo     = &bi;
+            vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+        }
 
-        vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
         return VK_SUCCESS;
      }
 
@@ -278,25 +294,38 @@ namespace VU
         globalsData.lightDir   = scene.lightDir;
         globalsData.viewProj   = scene.projection * view;
         globalsData.invViewProj = glm::inverse(globalsData.viewProj);
+
+        // Extract frustum planes once on the CPU (Gribb-Hartmann, Vulkan [0,1] depth).
+        // GLM is column-major: vp[col][row], so we reconstruct rows manually.
+        const glm::mat4& vp = globalsData.viewProj;
+        glm::vec4 row0(vp[0][0], vp[1][0], vp[2][0], vp[3][0]);
+        glm::vec4 row1(vp[0][1], vp[1][1], vp[2][1], vp[3][1]);
+        glm::vec4 row2(vp[0][2], vp[1][2], vp[2][2], vp[3][2]);
+        glm::vec4 row3(vp[0][3], vp[1][3], vp[2][3], vp[3][3]);
+        globalsData.frustumPlanes[0] = row3 + row0;  // left
+        globalsData.frustumPlanes[1] = row3 - row0;  // right
+        globalsData.frustumPlanes[2] = row3 + row1;  // bottom
+        globalsData.frustumPlanes[3] = row3 - row1;  // top
+        globalsData.frustumPlanes[4] = row2;          // near  (Vulkan [0,1])
+        globalsData.frustumPlanes[5] = row3 - row2;  // far
     }
 
-    void UpdateGlobalDataDescriptorSetByCopy(imp::Engine& engine, const GlobalUniforms& globals)
+    void UpdateGlobalDataDescriptorSetByCopy(imp::Engine& engine, const GlobalUniforms& globals, uint32_t frameIndex)
     {
         void* data;
-        vkMapMemory(engine.GetWorkQueue().GetDevice(), globals.ubo.memory, 0, sizeof(GlobalUniformsData), 0, &data);
+        vkMapMemory(engine.GetWorkQueue().GetDevice(), globals.ubos[frameIndex].memory, 0, sizeof(GlobalUniformsData), 0, &data);
         memcpy(data, &globals.data, sizeof(GlobalUniformsData));
-        vkUnmapMemory(engine.GetWorkQueue().GetDevice(), globals.ubo.memory);
+        vkUnmapMemory(engine.GetWorkQueue().GetDevice(), globals.ubos[frameIndex].memory);
     }
 
     void UpdateRenderingDataDescriptorSetByCopy(imp::Engine& engine, const RenderingDescriptors& renderingData, const std::vector<DrawData>& drawData)
     {
-        void* data;
-        vkMapMemory(engine.GetWorkQueue().GetDevice(), renderingData.drawDataBuffer.memory, 0, sizeof(DrawData) * drawData.size(), 0, &data);
-        memcpy(data, drawData.data(), sizeof(DrawData) * drawData.size());
-        vkUnmapMemory(engine.GetWorkQueue().GetDevice(), renderingData.drawDataBuffer.memory);
+        // Deprecated: drawDataBuffer is now DEVICE_LOCAL.  Use a staged copy for dirty meshes instead.
+        (void)engine; (void)renderingData; (void)drawData;
     }
 
-    VkResult SetupRenderingDescriptorSet(imp::Engine& engine, RenderingDescriptors& data, SceneLoader::Scene& scenel)
+    VkResult SetupRenderingDescriptorSet(imp::Engine& engine, RenderingDescriptors& data,
+        SceneLoader::Scene& scenel, const std::vector<DrawData>& drawDatas)
     {
         VkDevice device = engine.GetWorkQueue().GetDevice();
 
@@ -304,35 +333,113 @@ namespace VU
         const uint32_t materialCount = std::max(static_cast<uint32_t>(scenel.materials.size()), 1u);
         const uint32_t textureCount = static_cast<uint32_t>(scenel.textures.size());
 
-        VkResult result = CreateBuffer(engine.GetPhysicalDevice(), device,
-                                        sizeof(DrawData) * meshCount,
-                                        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                                        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                                        data.drawDataBuffer, "draw_data_buffer");
-        if (result != VK_SUCCESS)
-            return result;
+        // ---------------------------------------------------------
+        // drawData, materialBuffer, boundingSpheres: all DEVICE_LOCAL.
+        // Written once at startup via staging; never mapped again.
+        // Future dirty-mesh updates should use partial staged copies.
+        // ---------------------------------------------------------
+        const VkDeviceSize ddSize  = sizeof(DrawData)             * std::max(meshCount, 1u);
+        const VkDeviceSize matSize = sizeof(SceneLoader::Material) * std::max(materialCount, 1u);
+        const VkDeviceSize bvSize  = sizeof(BoundingSphere)       * std::max(meshCount, 1u);
 
-        result = CreateBuffer(engine.GetPhysicalDevice(), device,
-                                sizeof(SceneLoader::Material) * materialCount,
-                                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                                data.materialBuffer, "material_buffer");
-        if (result != VK_SUCCESS)
-            return result;
+        // Staging buffers (HOST_VISIBLE, temporary)
+        Buffer ddStaging, matStaging, bvStaging;
+        VkResult result = CreateBuffer(engine.GetPhysicalDevice(), device, ddSize,
+            VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+            ddStaging, "draw_data_staging");
+        if (result != VK_SUCCESS) return result;
 
-        if (!scenel.materials.empty())
+        result = CreateBuffer(engine.GetPhysicalDevice(), device, matSize,
+            VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+            matStaging, "material_staging");
+        if (result != VK_SUCCESS) return result;
+
+        result = CreateBuffer(engine.GetPhysicalDevice(), device, bvSize,
+            VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+            bvStaging, "bounding_sphere_staging");
+        if (result != VK_SUCCESS) return result;
+
+        // Fill staging buffers from CPU data
         {
-            void* matData;
-            vkMapMemory(device, data.materialBuffer.memory, 0, sizeof(SceneLoader::Material) * scenel.materials.size(), 0, &matData);
-            memcpy(matData, scenel.materials.data(), sizeof(SceneLoader::Material) * scenel.materials.size());
-            vkUnmapMemory(device, data.materialBuffer.memory);
+            void* mapped;
+            vkMapMemory(device, ddStaging.memory, 0, ddSize, 0, &mapped);
+            if (!drawDatas.empty())
+                memcpy(mapped, drawDatas.data(), sizeof(DrawData) * drawDatas.size());
+            vkUnmapMemory(device, ddStaging.memory);
+
+            vkMapMemory(device, matStaging.memory, 0, matSize, 0, &mapped);
+            if (!scenel.materials.empty())
+                memcpy(mapped, scenel.materials.data(), sizeof(SceneLoader::Material) * scenel.materials.size());
+            vkUnmapMemory(device, matStaging.memory);
+
+            vkMapMemory(device, bvStaging.memory, 0, bvSize, 0, &mapped);
+            if (!scenel.boundingSpheres.empty())
+                memcpy(mapped, scenel.boundingSpheres.data(), sizeof(BoundingSphere) * scenel.boundingSpheres.size());
+            vkUnmapMemory(device, bvStaging.memory);
         }
 
-        std::array<VkDescriptorSetLayoutBinding, 4> bindings {};
+        // Device-local destination buffers
+        result = CreateBuffer(engine.GetPhysicalDevice(), device, ddSize,
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+            data.drawDataBuffer, "draw_data_buffer");
+        if (result != VK_SUCCESS) return result;
+
+        result = CreateBuffer(engine.GetPhysicalDevice(), device, matSize,
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+            data.materialBuffer, "material_buffer");
+        if (result != VK_SUCCESS) return result;
+
+        result = CreateBuffer(engine.GetPhysicalDevice(), device, bvSize,
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+            data.boundingSphereBuffer, "bounding_sphere_buffer");
+        if (result != VK_SUCCESS) return result;
+
+        // Single command buffer: copy all three + one barrier covering all shader stages that read them
+        {
+            VkCommandBuffer cb = engine.AcquireCommandBuffer(imp::CommandBufferType::Graphics);
+            VkBufferCopy region {};
+            region.size = ddSize;  vkCmdCopyBuffer(cb, ddStaging.buffer,  data.drawDataBuffer.buffer,      1, &region);
+            region.size = matSize; vkCmdCopyBuffer(cb, matStaging.buffer, data.materialBuffer.buffer,      1, &region);
+            region.size = bvSize;  vkCmdCopyBuffer(cb, bvStaging.buffer,  data.boundingSphereBuffer.buffer, 1, &region);
+
+            InsertPipelineBarrier2(cb,
+                VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
+            vkEndCommandBuffer(cb);
+
+            imp::SubmitParams submit {};
+            submit.commandBufferCount = 1;
+            submit.pCommandBuffers    = &cb;
+            submit.queue              = engine.GetWorkQueue().GetGraphicsQueue();
+            imp::SubmitSync sync = engine.Submit(&submit, 1);
+
+            // Enqueue all staging buffers for deferred destruction
+            imp::SafeResourceDestroyer& destroyer = engine.GetSafeResourceDestroyer();
+            for (Buffer* staging : { &ddStaging, &matStaging, &bvStaging })
+            {
+                imp::VulkanResource res {};
+                res.type   = imp::VulkanResourceType::Buffer;
+                res.buffer = staging->buffer;
+                res.memory = staging->memory;
+                destroyer.EnqueueResourceForDestruction(res, sync.submit);
+            }
+        }
+
+        std::array<VkDescriptorSetLayoutBinding, 6> bindings {};
         bindings[0] = { 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT, nullptr };
         bindings[1] = { 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, nullptr };
         bindings[2] = { 2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr };
         bindings[3] = { 3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, std::max(textureCount, 1u), VK_SHADER_STAGE_FRAGMENT_BIT, nullptr };
+        bindings[4] = { 4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr };
+        bindings[5] = { 5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_COMPUTE_BIT, nullptr };
 
         VkDescriptorSetLayoutCreateInfo dslci {};
         dslci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -355,17 +462,32 @@ namespace VU
             return result;
         SetDebugName(device, VK_OBJECT_TYPE_DESCRIPTOR_SET, (uint64_t)data.descriptorSet, "rendering_ds");
 
-        std::array<VkDescriptorBufferInfo, 3> bi {};
-        bi[0] = { scenel.vertexBuffer.buffer, 0, VK_WHOLE_SIZE };
-        bi[1] = { data.drawDataBuffer.buffer, 0, VK_WHOLE_SIZE };
-        bi[2] = { data.materialBuffer.buffer, 0, VK_WHOLE_SIZE };
+        {   // Allocate the draw index buffer (device-local, written by compute, read by vertex shader)
+            const VkDeviceSize diSize = sizeof(uint32_t) * std::max(meshCount, 1u);
+            result = CreateBuffer(engine.GetPhysicalDevice(), device,
+                                    diSize,
+                                    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                                    data.drawIndexBuffer, "draw_index_buffer");
+            if (result != VK_SUCCESS)
+                return result;
+        }
 
-        std::array<VkWriteDescriptorSet, 3> bufferWrites {};
-        for (uint32_t i = 0; i < 3; i++)
+        std::array<VkDescriptorBufferInfo, 5> bi {};
+        bi[0] = { scenel.vertexBuffer.buffer,        0, VK_WHOLE_SIZE };
+        bi[1] = { data.drawDataBuffer.buffer,        0, VK_WHOLE_SIZE };
+        bi[2] = { data.materialBuffer.buffer,        0, VK_WHOLE_SIZE };
+        bi[3] = { data.boundingSphereBuffer.buffer,  0, VK_WHOLE_SIZE };
+        bi[4] = { data.drawIndexBuffer.buffer,       0, VK_WHOLE_SIZE };
+
+        std::array<VkWriteDescriptorSet, 5> bufferWrites {};
+        for (uint32_t i = 0; i < 5; i++)
         {
             bufferWrites[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             bufferWrites[i].dstSet = data.descriptorSet;
-            bufferWrites[i].dstBinding = i;
+            // bindings: 0,1,2,4,5  (slot 3 is the texture array, not a plain buffer)
+            const uint32_t bindingMap[] = { 0, 1, 2, 4, 5 };
+            bufferWrites[i].dstBinding = bindingMap[i];
             bufferWrites[i].descriptorCount = 1;
             bufferWrites[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
             bufferWrites[i].pBufferInfo = &bi[i];
@@ -412,6 +534,240 @@ namespace VU
         return VK_SUCCESS;
     }
         
+    VkResult BuildIndirectDrawBuffer(imp::Engine& engine, const SceneLoader::Scene& scenel, IndirectDrawBuffer& out)
+    {
+        VkPhysicalDevice pDevice = engine.GetPhysicalDevice();
+        VkDevice         device  = engine.GetWorkQueue().GetDevice();
+
+        const uint32_t   drawCount    = static_cast<uint32_t>(scenel.meshes.size());
+        const VkDeviceSize commandsSize = sizeof(VkDrawIndexedIndirectCommand) * drawCount;
+        out.maxDrawCount = drawCount;
+
+        // Staging: commands
+        Buffer commandsStaging;
+        VkResult result = CreateBuffer(pDevice, device, commandsSize,
+            VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+            commandsStaging, "indirect_commands_staging");
+        if (result != VK_SUCCESS) return result;
+
+        void* mapped;
+        vkMapMemory(device, commandsStaging.memory, 0, commandsSize, 0, &mapped);
+        auto* cmds = static_cast<VkDrawIndexedIndirectCommand*>(mapped);
+        for (uint32_t i = 0; i < drawCount; i++)
+        {
+            const auto& mesh = scenel.meshes[i];
+            cmds[i].indexCount    = mesh.indexCount;
+            cmds[i].instanceCount = 1;
+            cmds[i].firstIndex    = mesh.indexOffset;
+            cmds[i].vertexOffset  = mesh.vertexOffset;
+            cmds[i].firstInstance = 0;
+        }
+        vkUnmapMemory(device, commandsStaging.memory);
+
+        // Staging: count
+        Buffer countStaging;
+        result = CreateBuffer(pDevice, device, sizeof(uint32_t),
+            VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+            countStaging, "indirect_count_staging");
+        if (result != VK_SUCCESS) return result;
+
+        vkMapMemory(device, countStaging.memory, 0, sizeof(uint32_t), 0, &mapped);
+        memcpy(mapped, &drawCount, sizeof(uint32_t));
+        vkUnmapMemory(device, countStaging.memory);
+
+        // Device-local destinations
+        // STORAGE_BUFFER_BIT is required because the culling compute shader reads srcCmds
+        // (binding 0) as a storage buffer via vkUpdateDescriptorSets.
+        result = CreateBuffer(pDevice, device, commandsSize,
+            VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+            out.commands, "indirect_commands");
+        if (result != VK_SUCCESS) return result;
+
+        result = CreateBuffer(pDevice, device, sizeof(uint32_t),
+            VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+            out.countBuffer, "indirect_count");
+        if (result != VK_SUCCESS) return result;
+
+        // Upload
+        VkCommandBuffer cb = engine.AcquireCommandBuffer(imp::CommandBufferType::Graphics);
+
+        VkBufferCopy region {};
+        region.size = commandsSize;
+        vkCmdCopyBuffer(cb, commandsStaging.buffer, out.commands.buffer, 1, &region);
+        region.size = sizeof(uint32_t);
+        vkCmdCopyBuffer(cb, countStaging.buffer, out.countBuffer.buffer, 1, &region);
+
+        InsertPipelineBarrier2(cb,
+            VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT,
+            VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT);
+
+        vkEndCommandBuffer(cb);
+
+        imp::SubmitParams submit {};
+        submit.commandBufferCount = 1;
+        submit.pCommandBuffers    = &cb;
+        submit.queue              = engine.GetWorkQueue().GetGraphicsQueue();
+        imp::SubmitSync sync = engine.Submit(&submit, 1);
+
+        // Staging buffers are no longer needed once the GPU finishes the transfer
+        imp::SafeResourceDestroyer& destroyer = engine.GetSafeResourceDestroyer();
+        imp::VulkanResource res {};
+        res.type   = imp::VulkanResourceType::Buffer;
+        res.buffer = commandsStaging.buffer;
+        res.memory = commandsStaging.memory;
+        destroyer.EnqueueResourceForDestruction(res, sync.submit);
+        res.buffer = countStaging.buffer;
+        res.memory = countStaging.memory;
+        destroyer.EnqueueResourceForDestruction(res, sync.submit);
+
+        return VK_SUCCESS;
+    }
+
+    VkResult CreateCullingPipeline(imp::Engine& engine, VkShaderModule compModule,
+        const IndirectDrawBuffer& srcDrawBuffer,
+        const RenderingDescriptors& renderingDescriptors,
+        GlobalUniforms& globals,
+        CullingPipeline& out)
+    {
+        VkPhysicalDevice pDevice = engine.GetPhysicalDevice();
+        VkDevice         device  = engine.GetWorkQueue().GetDevice();
+
+        out.pGlobalUniforms = &globals;
+
+        const uint32_t   maxDraws = srcDrawBuffer.maxDrawCount;
+        const VkDeviceSize cmdSize = sizeof(VkDrawIndexedIndirectCommand) * std::max(maxDraws, 1u);
+
+        // Device-local output command buffer (written by compute, read as indirect)
+        VkResult result = CreateBuffer(pDevice, device, cmdSize,
+            VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+            out.culledBuffer.commands, "culled_commands");
+        if (result != VK_SUCCESS) return result;
+
+        // Device-local output count buffer (zeroed via vkCmdFillBuffer each frame)
+        result = CreateBuffer(pDevice, device, sizeof(uint32_t),
+            VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+            out.culledBuffer.countBuffer, "culled_count");
+        if (result != VK_SUCCESS) return result;
+
+        out.culledBuffer.maxDrawCount = maxDraws;
+
+        // set 0: 6 storage buffers — srcCmds, BVs, DrawData, dstCmds, dstCount, dstIndices
+        std::array<VkDescriptorSetLayoutBinding, 6> bindings {};
+        for (uint32_t i = 0; i < 6; ++i)
+            bindings[i] = { i, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr };
+
+        VkDescriptorSetLayoutCreateInfo dslci {};
+        dslci.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        dslci.bindingCount = static_cast<uint32_t>(bindings.size());
+        dslci.pBindings    = bindings.data();
+        result = vkCreateDescriptorSetLayout(device, &dslci, nullptr, &out.descriptorSetLayout);
+        if (result != VK_SUCCESS) return result;
+        SetDebugName(device, VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT, (uint64_t)out.descriptorSetLayout, "culling_dsl");
+
+        VkDescriptorSetAllocateInfo dsai {};
+        dsai.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        dsai.descriptorPool     = engine.GetDescriptorPool();
+        dsai.descriptorSetCount = 1;
+        dsai.pSetLayouts        = &out.descriptorSetLayout;
+        result = vkAllocateDescriptorSets(device, &dsai, &out.descriptorSet);
+        if (result != VK_SUCCESS) return result;
+        SetDebugName(device, VK_OBJECT_TYPE_DESCRIPTOR_SET, (uint64_t)out.descriptorSet, "culling_ds");
+
+        std::array<VkDescriptorBufferInfo, 6> bi {};
+        bi[0] = { srcDrawBuffer.commands.buffer,                    0, VK_WHOLE_SIZE };
+        bi[1] = { renderingDescriptors.boundingSphereBuffer.buffer,  0, VK_WHOLE_SIZE };
+        bi[2] = { renderingDescriptors.drawDataBuffer.buffer,        0, VK_WHOLE_SIZE };
+        bi[3] = { out.culledBuffer.commands.buffer,                  0, VK_WHOLE_SIZE };
+        bi[4] = { out.culledBuffer.countBuffer.buffer,               0, VK_WHOLE_SIZE };
+        bi[5] = { renderingDescriptors.drawIndexBuffer.buffer,       0, VK_WHOLE_SIZE };
+
+        std::array<VkWriteDescriptorSet, 6> writes {};
+        for (uint32_t i = 0; i < 6; ++i)
+        {
+            writes[i].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[i].dstSet          = out.descriptorSet;
+            writes[i].dstBinding      = i;
+            writes[i].descriptorCount = 1;
+            writes[i].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            writes[i].pBufferInfo     = &bi[i];
+        }
+        vkUpdateDescriptorSets(device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+
+        VkPushConstantRange pcRange {};
+        pcRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        pcRange.size       = sizeof(CullingPushConstants);
+
+        // set 1: globals UBO (frustum planes + camera data) — reuse existing descriptor set layout
+        std::array<VkDescriptorSetLayout, 2> setLayouts = { out.descriptorSetLayout, globals.descriptorSetLayout };
+
+        VkPipelineLayoutCreateInfo plci {};
+        plci.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        plci.setLayoutCount         = static_cast<uint32_t>(setLayouts.size());
+        plci.pSetLayouts            = setLayouts.data();
+        plci.pushConstantRangeCount = 1;
+        plci.pPushConstantRanges    = &pcRange;
+        result = vkCreatePipelineLayout(device, &plci, nullptr, &out.pipelineLayout);
+        if (result != VK_SUCCESS) return result;
+        SetDebugName(device, VK_OBJECT_TYPE_PIPELINE_LAYOUT, (uint64_t)out.pipelineLayout, "culling_layout");
+
+        VkPipelineShaderStageCreateInfo stage {};
+        stage.sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stage.stage  = VK_SHADER_STAGE_COMPUTE_BIT;
+        stage.module = compModule;
+        stage.pName  = "main";
+
+        VkComputePipelineCreateInfo cpci {};
+        cpci.sType  = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+        cpci.stage  = stage;
+        cpci.layout = out.pipelineLayout;
+        result = vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &cpci, nullptr, &out.pipeline);
+        if (result == VK_SUCCESS)
+            SetDebugName(device, VK_OBJECT_TYPE_PIPELINE, (uint64_t)out.pipeline, "culling_pipeline");
+        return result;
+    }
+
+    void DispatchCulling(VkCommandBuffer cb, const CullingPipeline& pipeline, uint32_t totalDraws, uint32_t frameIndex)
+    {
+        // Reset the output draw count to 0 so the atomic counter starts fresh.
+        vkCmdFillBuffer(cb, pipeline.culledBuffer.countBuffer.buffer, 0, sizeof(uint32_t), 0);
+
+        // Ensure the fill is visible before the compute shader increments the counter.
+        InsertPipelineBarrier2(cb,
+            VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+            VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+
+        vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.pipeline);
+
+        // set 0 = culling storage buffers, set 1 = globals UBO for this frame slot
+        std::array<VkDescriptorSet, 2> sets = { pipeline.descriptorSet, pipeline.pGlobalUniforms->descriptorSets[frameIndex] };
+        vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.pipelineLayout,
+            0, static_cast<uint32_t>(sets.size()), sets.data(), 0, nullptr);
+
+        CullingPushConstants pc { totalDraws };
+        vkCmdPushConstants(cb, pipeline.pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT,
+            0, sizeof(pc), &pc);
+
+        const uint32_t groupCount = (totalDraws + 63u) / 64u;
+        vkCmdDispatch(cb, groupCount, 1, 1);
+
+        // Culled commands and draw indices must be visible before indirect draw and vertex reads.
+        InsertPipelineBarrier2(cb,
+            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+            VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT,
+            VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+            VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
+    }
+
     // Stage 1: G-Buffer image allocation
     //
     // Creates the three device-local images that make up the G-Buffer.
@@ -540,22 +896,17 @@ namespace VU
             width, height, pipeline.framebuffer, "gbuffer_framebuffer");
         if (result != VK_SUCCESS) return result;
 
-        // Pipeline layout: set 0 = globals UBO, set 1 = rendering descriptors, push constant = drawIndex + vertexOffset
-        VkPushConstantRange pushRange {};
-        pushRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-        pushRange.size       = sizeof(uint32_t) * 2;
-
+        // Pipeline layout: set 0 = globals UBO, set 1 = rendering descriptors
+        // No push constants - draw index is encoded in firstInstance (gl_BaseInstanceARB).
         std::array<VkDescriptorSetLayout, 2> setLayouts = {
             pipeline.pGlobalUniforms->descriptorSetLayout,
             pipeline.pRenderingDescriptors->descriptorSetLayout
         };
 
         VkPipelineLayoutCreateInfo plci {};
-        plci.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-        plci.setLayoutCount         = static_cast<uint32_t>(setLayouts.size());
-        plci.pSetLayouts            = setLayouts.data();
-        plci.pushConstantRangeCount = 1;
-        plci.pPushConstantRanges    = &pushRange;
+        plci.sType          = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        plci.setLayoutCount = static_cast<uint32_t>(setLayouts.size());
+        plci.pSetLayouts    = setLayouts.data();
 
         result = vkCreatePipelineLayout(device, &plci, nullptr, &pipeline.pipelineLayout);
         if (result != VK_SUCCESS) return result;

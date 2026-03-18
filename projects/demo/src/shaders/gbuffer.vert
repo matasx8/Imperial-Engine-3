@@ -1,12 +1,6 @@
 #version 450
 
-// Draw index passed as push constant. gl_DrawIDARB only works for indirect
-// draws; gl_InstanceIndex requires firstInstance support which isn't reliable.
-layout(push_constant) uniform PushConstants
-{
-    uint drawIndex;
-    uint vertexOffset;  // = mesh.vertexOffset; gl_VertexIndex never resets between draws
-} pc;
+#extension GL_ARB_shader_draw_parameters : require
 
 // ---------------------------------------------------------
 //  Outputs
@@ -46,8 +40,11 @@ layout(set = 0, binding = 0) uniform Globals
     vec3 lightDir;
 } globals;
 
-layout(set = 1, binding = 0) readonly buffer Vertices  { Vertex   vertices[]; };
-layout(set = 1, binding = 1) readonly buffer DrawDatas { DrawData drawData[]; };
+layout(set = 1, binding = 0) readonly buffer Vertices    { Vertex   vertices[];    };
+layout(set = 1, binding = 1) readonly buffer DrawDatas   { DrawData drawData[];    };
+// Maps compacted gl_DrawIDARB (post-culling slot index) back to the original DrawData index.
+// Written each frame by the culling compute shader alongside the compacted command buffer.
+layout(set = 1, binding = 5) readonly buffer DrawIndices { uint     drawIndices[]; };
 
 // ---------------------------------------------------------
 //  Main
@@ -55,7 +52,7 @@ layout(set = 1, binding = 1) readonly buffer DrawDatas { DrawData drawData[]; };
 void main()
 {
     Vertex v   = vertices[gl_VertexIndex];
-    uint   ddi = pc.drawIndex;
+    uint   ddi = drawIndices[gl_DrawIDARB];  // remap post-culling slot → original DrawData index
 
     vec3  pos      = vec3(v.vx, v.vy, v.vz);
     vec3  norm     = vec3(v.nx, v.ny, v.nz);

@@ -18,7 +18,20 @@ namespace imp
 
         glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
         glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
-        m_Window = glfwCreateWindow(params.width, params.height, "Imperial Engine 3", NULL, NULL);
+
+        if (params.fullscreen)
+        {
+            // Prefer the secondary monitor; fall back to primary if only one is connected.
+            int monitorCount = 0;
+            GLFWmonitor** monitors = glfwGetMonitors(&monitorCount);
+            GLFWmonitor* monitor = monitors[monitorCount > 1 ? 1 : 0];
+            const GLFWvidmode* mode = glfwGetVideoMode(monitor);
+            m_Window = glfwCreateWindow(mode->width, mode->height, "Imperial Engine 3", monitor, NULL);
+        }
+        else
+        {
+            m_Window = glfwCreateWindow(params.width, params.height, "Imperial Engine 3", NULL, NULL);
+        }
 
         return true;
     }

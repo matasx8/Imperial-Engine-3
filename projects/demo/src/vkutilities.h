@@ -71,14 +71,20 @@ namespace VU
         float padding1;
         glm::vec3 lightDir;  // normalized, points from surface toward light
         float padding2;
+        // Frustum planes extracted on the CPU each frame (Gribb-Hartmann, Vulkan [0,1] depth).
+        // Stored here so the culling compute shader reads them from the globals UBO instead
+        // of re-extracting them per thread.
+        glm::vec4 frustumPlanes[6];
     };
 
     struct GlobalUniforms
     {
-        Buffer ubo;
-        VkDescriptorSetLayout descriptorSetLayout;
-        VkDescriptorSet descriptorSet;
-        GlobalUniformsData data;
+        // One UBO and one descriptor set per frame-in-flight so the CPU can write the next
+        // frame's data while the GPU is still consuming the previous frame's UBO.
+        std::vector<Buffer>          ubos;
+        VkDescriptorSetLayout        descriptorSetLayout = VK_NULL_HANDLE;
+        std::vector<VkDescriptorSet> descriptorSets;
+        GlobalUniformsData           data;  // CPU-side mirror; written to ubos[frameIndex] each frame
     };
 
     struct DrawData
@@ -88,6 +94,17 @@ namespace VU
         uint32_t _pad[3];  // std430: struct stride rounds up to mat4's 16-byte alignment → 80 bytes
     };
     static_assert(sizeof(DrawData) == 80);
+
+    // Per-mesh bounding sphere in local (object) space.
+    // The culling shader transforms the center by DrawData.transform and scales
+    // the radius by the maximum column length to get a world-space sphere.
+    // GPU layout: vec4 (xyz = center, w = radius) — 16 bytes, vec4-aligned.
+    struct BoundingSphere
+    {
+        glm::vec3 center;
+        float radius;
+    };
+    static_assert(sizeof(BoundingSphere) == 16);
 
     struct SceneData
     {
@@ -104,7 +121,53 @@ namespace VU
         VkDescriptorSet descriptorSet;
         Buffer drawDataBuffer;
         Buffer materialBuffer;
+        Buffer boundingSphereBuffer;  // BoundingSphere[] — binding 4, compute stage
+        Buffer drawIndexBuffer;       // uint[] — binding 5, maps gl_DrawIDARB → original draw data index
     };
+
+    // Pre-generated indirect draw buffer for GPU-driven rendering.
+    // One VkDrawIndexedIndirectCommand per mesh, written once at startup.
+    struct IndirectDrawBuffer
+    {
+        Buffer commands;        // VkDrawIndexedIndirectCommand[]
+        Buffer countBuffer;     // single uint32_t = number of draws
+        uint32_t maxDrawCount = 0;
+    };
+
+    VkResult BuildIndirectDrawBuffer(imp::Engine& engine, const SceneLoader::Scene& scenel, IndirectDrawBuffer& out);
+
+    // Per-frame push constants for the culling compute shader.
+    struct CullingPushConstants
+    {
+        uint32_t totalDraws;  // 4 bytes
+    };
+
+    // Culling compute pipeline.
+    //
+    // Each frame:
+    //   1. DispatchCulling fills culledBuffer with only the visible draws
+    //      and drawIndexBuffer with the original mesh index for each visible draw.
+    //   2. The geometry pass reads from culledBuffer instead of the master buffer.
+    //      The vertex shader reads drawIndexBuffer[gl_DrawIDARB] to index into DrawData[].
+    struct CullingPipeline
+    {
+        VkPipeline            pipeline            = VK_NULL_HANDLE;
+        VkPipelineLayout      pipelineLayout      = VK_NULL_HANDLE;
+        VkDescriptorSetLayout descriptorSetLayout = VK_NULL_HANDLE;
+        VkDescriptorSet       descriptorSet       = VK_NULL_HANDLE;
+        IndirectDrawBuffer    culledBuffer;        // output: compacted draws written by compute
+        GlobalUniforms*       pGlobalUniforms     = nullptr;
+    };
+
+    VkResult CreateCullingPipeline(imp::Engine& engine, VkShaderModule compModule,
+        const IndirectDrawBuffer& srcDrawBuffer,
+        const RenderingDescriptors& renderingDescriptors,
+        GlobalUniforms& globals,
+        CullingPipeline& out);
+
+    // Records: zero count → dispatch → barrier into cb.
+    // Must be called before the geometry pass each frame.
+    void DispatchCulling(VkCommandBuffer cb, const CullingPipeline& pipeline, uint32_t totalDraws, uint32_t frameIndex);
 
     struct PhongPipeline
     {
@@ -177,11 +240,15 @@ namespace VU
 
     VkResult CreateBuffer(VkPhysicalDevice pDevice, VkDevice device, VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties, Buffer& buffer, const char* debugName = nullptr);
 
-    VkResult SetupGlobalUniforms(imp::Engine& engine, GlobalUniforms& globals);
+    VkResult SetupGlobalUniforms(imp::Engine& engine, GlobalUniforms& globals, uint32_t framesInFlight);
     void InitializeSceneData(imp::Engine& engine, SceneData& scene, SceneLoader::Scene& scenel);
     void UpdateCamera(imp::Window& window, SceneData& scene, GlobalUniformsData& globalsData, double delta);
-    void UpdateGlobalDataDescriptorSetByCopy(imp::Engine& engine, const GlobalUniforms& globals);
-    VkResult SetupRenderingDescriptorSet(imp::Engine& engine, RenderingDescriptors& data, SceneLoader::Scene& scenel);
+    // Uploads globals.data to the UBO slot for this frame.  Safe with multiple frames in flight
+    // because each slot is an independent HOST_VISIBLE buffer.
+    void UpdateGlobalDataDescriptorSetByCopy(imp::Engine& engine, const GlobalUniforms& globals, uint32_t frameIndex);
+    // drawDatas must be the CPU-side mirror built by InitializeSceneData; uploaded once to DEVICE_LOCAL memory.
+    VkResult SetupRenderingDescriptorSet(imp::Engine& engine, RenderingDescriptors& data,
+        SceneLoader::Scene& scenel, const std::vector<DrawData>& drawDatas);
 
     // Stage 1: G-Buffer image allocation
     // Allocates the three G-Buffer images at the given resolution. Call once at startup; call again on resize.
@@ -194,7 +261,9 @@ namespace VU
     // Legacy (replaced in Stage 3)
     VkResult CreatePhongPipeline(VkDevice device, VkShaderModule vertModule, VkShaderModule fragModule, PhongPipeline& pipeline);
 
-    void UpdateRenderingDataDescriptorSetByCopy(imp::Engine& engine, const RenderingDescriptors& renderingData, const std::vector<DrawData>& drawData);
+    // Partial re-upload for dirty draw data entries (e.g. animated meshes).
+    // Pass the indices of the changed DrawData slots; a device-local staging copy is submitted.
+    // (Not yet implemented — placeholder for future dirty-tracking support.)
 
     void PaceFrame(VkDevice device, std::vector<imp::SubmitSync>& framePacingData, const imp::SubmitSync& currentFrameSync, uint32_t& frameIndex, uint32_t maxFramesInFlight, imp::SubmitSyncManager& submitSyncManager);
 

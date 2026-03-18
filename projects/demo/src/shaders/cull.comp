@@ -1,0 +1,104 @@
+#version 450
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+// ---------------------------------------------------------
+//  Structs
+// ---------------------------------------------------------
+
+// VkDrawIndexedIndirectCommand
+struct DrawCommand
+{
+    uint indexCount;
+    uint instanceCount;
+    uint firstIndex;
+    int  vertexOffset;
+    uint firstInstance;
+};
+
+// VU::BoundingSphere (16 bytes, local space)
+struct BoundingSphere
+{
+    vec3  center;
+    float radius;
+};
+
+// VU::DrawData (std430: mat4 + uint)
+struct DrawData
+{
+    mat4 transform;
+    uint materialIdx;
+};
+
+// ---------------------------------------------------------
+//  set 0: culling resources
+// ---------------------------------------------------------
+layout(set = 0, binding = 0) readonly buffer SrcCommands     { DrawCommand    srcCmds[];   };
+layout(set = 0, binding = 1) readonly buffer BoundingVolumes { BoundingSphere bvs[];       };
+layout(set = 0, binding = 2) readonly buffer DrawDatas       { DrawData       drawData[];  };
+layout(set = 0, binding = 3)          buffer DstCommands     { DrawCommand    dstCmds[];   };
+layout(set = 0, binding = 4)          buffer DstCount        { uint           dstCount;    };
+layout(set = 0, binding = 5)          buffer DstIndices      { uint           dstIndices[]; };
+
+// ---------------------------------------------------------
+//  set 1: globals UBO - frustum planes extracted on CPU
+//  Layout must match VU::GlobalUniformsData exactly.
+// ---------------------------------------------------------
+layout(set = 1, binding = 0) uniform Globals
+{
+    mat4 viewProj;
+    mat4 invViewProj;
+    vec3 cameraPos;  float _pad1;
+    vec3 lightDir;   float _pad2;
+    vec4 frustumPlanes[6];
+} globals;
+
+layout(push_constant) uniform PushConstants
+{
+    uint totalDraws;
+} pc;
+
+// ---------------------------------------------------------
+//  Main
+// ---------------------------------------------------------
+void main()
+{
+    uint id = gl_GlobalInvocationID.x;
+    if (id >= pc.totalDraws) return;
+
+    BoundingSphere bv    = bvs[id];
+    mat4           model = drawData[id].transform;
+
+    // Transform sphere center to world space
+    vec3 worldCenter = (model * vec4(bv.center, 1.0)).xyz;
+
+    // Scale radius by max column length to handle non-uniform scale
+    float sx = length(model[0].xyz);
+    float sy = length(model[1].xyz);
+    float sz = length(model[2].xyz);
+    float worldRadius = bv.radius * max(max(sx, sy), sz);
+
+    // ---------------------------------------------------------
+    //  Signed-distance sphere-vs-plane test.
+    //  Planes are pre-extracted on the CPU and stored in the
+    //  globals UBO - no per-thread matrix work needed.
+    //
+    //  dist = (dot(n, center) + d) / |n|
+    //  If dist < -radius the sphere is fully outside.
+    // ---------------------------------------------------------
+    for (int i = 0; i < 6; ++i)
+    {
+        vec4  plane      = globals.frustumPlanes[i];
+        float invLen     = inversesqrt(dot(plane.xyz, plane.xyz));
+        float signedDist = (dot(plane.xyz, worldCenter) + plane.w) * invLen;
+        if (signedDist < -worldRadius)
+            return;  // fully outside this plane → cull
+    }
+
+    // Visible: atomically claim an output slot.
+    // Write both the compacted draw command AND the original draw index so the
+    // vertex shader can correctly map gl_DrawIDARB → DrawData[] after culling.
+    uint slot        = atomicAdd(dstCount, 1u);
+    dstCmds[slot]    = srcCmds[id];
+    dstIndices[slot] = id;  // original draw index → read by vertex shader via drawIndices[gl_DrawIDARB]
+}

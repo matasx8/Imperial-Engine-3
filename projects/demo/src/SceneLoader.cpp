@@ -302,6 +302,64 @@ namespace SceneLoader
         stats.vertexMemBytes  = vertexBufferSize;
         stats.indexMemBytes   = indexBufferSize;
 
+        // Compute per-mesh bounding spheres in parallel (Ritter's algorithm).
+        // Each task operates on its own mesh's vertex array — no shared writes.
+        scene.boundingSpheres.resize(reqs.meshes.size());
+        {
+            std::vector<std::future<void>> bvFutures;
+            bvFutures.reserve(reqs.meshes.size());
+            for (uint32_t i = 0; i < static_cast<uint32_t>(reqs.meshes.size()); ++i)
+            {
+                bvFutures.push_back(std::async(std::launch::async, [i, &reqs, &scene]()
+                {
+                    const auto& verts = reqs.meshes[i].vertices;
+                    if (verts.empty()) { scene.boundingSpheres[i] = {}; return; }
+
+                    // Pass 1: find the extremal point on each axis
+                    glm::vec3 minX = verts[0].position, maxX = verts[0].position;
+                    glm::vec3 minY = verts[0].position, maxY = verts[0].position;
+                    glm::vec3 minZ = verts[0].position, maxZ = verts[0].position;
+                    for (const auto& v : verts)
+                    {
+                        if (v.position.x < minX.x) minX = v.position;
+                        if (v.position.x > maxX.x) maxX = v.position;
+                        if (v.position.y < minY.y) minY = v.position;
+                        if (v.position.y > maxY.y) maxY = v.position;
+                        if (v.position.z < minZ.z) minZ = v.position;
+                        if (v.position.z > maxZ.z) maxZ = v.position;
+                    }
+
+                    // Initial sphere from the widest axis-aligned span
+                    const float dx = glm::length(maxX - minX);
+                    const float dy = glm::length(maxY - minY);
+                    const float dz = glm::length(maxZ - minZ);
+                    glm::vec3 p, q;
+                    if      (dx >= dy && dx >= dz) { p = minX; q = maxX; }
+                    else if (dy >= dz)             { p = minY; q = maxY; }
+                    else                           { p = minZ; q = maxZ; }
+
+                    glm::vec3 center = (p + q) * 0.5f;
+                    float     radius = glm::length(q - p) * 0.5f;
+
+                    // Pass 2: grow sphere to enclose any outlier
+                    for (const auto& v : verts)
+                    {
+                        const float d = glm::length(v.position - center);
+                        if (d > radius)
+                        {
+                            const float newRadius = (radius + d) * 0.5f;
+                            center += ((d - newRadius) / d) * (v.position - center);
+                            radius = newRadius;
+                        }
+                    }
+
+                    scene.boundingSpheres[i] = { center, radius };
+                }));
+            }
+            for (auto& f : bvFutures)
+                f.get();
+        }
+
         // Create vertex staging buffer
         VU::Buffer vertexStagingBuffer;
         VkResult result = CreateBuffer(pDevice, device,
